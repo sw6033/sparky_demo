@@ -1,0 +1,82 @@
+{
+  "id": "animals",
+  "version": 2,
+  "title": "小动物见面会",
+  "icon": "🐾",
+  "activities": {
+    "A": "practice",
+    "B": "explore"
+  },
+  "goals": {
+    "recognize": "meaningful_choice",
+    "express": "introduce_animal"
+  },
+  "prompts": {
+    "opening": "谁在草丛里？你想先找哪只小动物？",
+    "ask": "你找到了它！你会怎么用中文向朋友介绍它？",
+    "practice": "我们练一句介绍小动物的话。你想怎么说？"
+  },
+  "items": [
+    {
+      "id": "cat",
+      "zh": "小猫",
+      "en": "a cat",
+      "icon": "🐈",
+      "aliases": [
+        "猫",
+        "小猫咪"
+      ],
+      "english": [
+        "cat",
+        "kitty"
+      ],
+      "forms": [
+        "这是小猫",
+        "这是一只猫",
+        "一只小猫"
+      ]
+    },
+    {
+      "id": "dog",
+      "zh": "小狗",
+      "en": "a dog",
+      "icon": "🐕",
+      "aliases": [
+        "狗",
+        "小狗狗"
+      ],
+      "english": [
+        "dog",
+        "puppy"
+      ],
+      "forms": [
+        "这是小狗",
+        "这是一只狗",
+        "一只小狗"
+      ]
+    }
+  ],
+  "meaning_frames": [
+    "I choose {zh}",
+    "I want {zh}",
+    "我选{en}",
+    "我想选{zh}"
+  ],
+  "target_frames": [
+    "这是{zh}"
+  ],
+  "entry_names": [
+    "动物",
+    "小动物"
+  ],
+  "invitation": "草丛里有动静。我们去看看是谁，好吗？",
+  "entry_phrases": [
+    "找小动物",
+    "找小猫",
+    "找小狗",
+    "看小动物",
+    "听小动物的故事",
+    "小猫",
+    "小狗"
+  ]
+}

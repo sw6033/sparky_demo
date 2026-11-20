@@ -1,0 +1,178 @@
+"""Run with python3 server.py. No third-party Python dependencies."""
+import argparse
+import hashlib
+import hmac
+import json
+import os
+import re
+import secrets
+from http import HTTPStatus
+from http.cookies import SimpleCookie
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
+from sparky import brain, live
+from sparky.content import Catalog, ROOT
+from sparky.store import Store, Missing, Conflict
+
+ACTIONS={"start","resume","pause","finish","select","help","meaning","refuse","utterance","silence"}
+def string(obj,key,limit,blank=False):
+    v=obj.get(key)
+    if not isinstance(v,str) or len(v)>limit or (not blank and not v.strip()):
+        raise ValueError("字段无效："+key)
+    return v.strip()
+
+def validate_event(e):
+    string(e,"id",100)
+    if type(e.get("revision")) is not int or e["revision"]<0 or e.get("type") not in ACTIONS:
+        raise ValueError("事件类型或版本无效。")
+    if e["type"]=="start":
+        if e.get("mode") not in ("A","B"):
+            raise ValueError("活动类型无效。")
+        string(e,"lesson",80)
+    if e["type"]=="select":
+        string(e,"item",80)
+    if e["type"]=="utterance":
+        string(e,"text",800,True)
+        if e.get("source","text") not in ("text","voice"):
+            raise ValueError("输入来源无效。")
+        confidence=e.get("confidence",1)
+        if type(confidence) not in (float,int) or not 0<=confidence<=1 or e.get("speaker","child") not in ("child","unknown"):
+            raise ValueError("输入来源或质量无效。")
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self,*args):
+        pass
+
+    def respond(self,status,data,media="application/json; charset=utf-8"):
+        body=data if isinstance(data,bytes) else json.dumps(data,ensure_ascii=False).encode()
+        self.send_response(status)
+        self.send_header("Content-Type",media)
+        self.send_header("Content-Length",str(len(body)))
+        self.send_header("Cache-Control","no-store")
+        self.send_header("X-Content-Type-Options","nosniff")
+        if getattr(self,"new_cookie",None):
+            self.send_header("Set-Cookie","sparky_family="+self.new_cookie+"; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def family(self):
+        c=SimpleCookie(self.headers.get("Cookie",""))
+        token=c["sparky_family"].value if "sparky_family" in c else ""
+        if not re.fullmatch(r"[a-f0-9]{64}",token):
+            token=self.new_cookie=secrets.token_hex(32)
+        return hashlib.sha256(token.encode()).hexdigest()
+
+    def parent_check(self):
+        pin=os.getenv("SPARKY_PARENT_PIN","")
+        if pin and not hmac.compare_digest(self.headers.get("X-Parent-Pin","").encode(),pin.encode()):
+            raise PermissionError("需要正确的家长 PIN。")
+
+    def route(self):
+        host=self.headers.get("Host","")
+        if urlsplit("//"+host).hostname not in {"localhost","127.0.0.1","::1"}:
+            raise PermissionError("仅允许本机访问。")
+        path=urlsplit(self.path).path
+        store=self.server.store
+        if self.command=="GET":
+            if path=="/api/home":
+                family=self.family()
+                return self.respond(200,{"lessons":store.catalog.listing(),"profiles":store.profiles(family),
+                    "model":brain.configured(),"live":bool(self.server.live_key),"pin":bool(os.getenv("SPARKY_PARENT_PIN"))})
+            if match:=re.fullmatch(r"/api/state/([a-f0-9]{32})",path):
+                return self.respond(200,store.state(self.family(),match[1]))
+            assets={"/parent":("parent.html","text/html"),"/parent.js":("parent.js","application/javascript"),"/":("index.html","text/html"),"/app.js":("app.js","application/javascript"),
+                "/live.js":("live.js","application/javascript"),"/style.css":("style.css","text/css")}
+            if path in assets:
+                name,mime=assets[path]
+                return self.respond(200,(ROOT/"web"/name).read_bytes(),mime+"; charset=utf-8")
+            raise Missing()
+        if self.headers.get("Origin") and self.headers["Origin"]!="http://"+host:
+            raise PermissionError("来源无效。")
+        length=int(self.headers.get("Content-Length","0"))
+        limit=65536 if path=="/api/live" else 16384
+        if length<=0 or length>limit or self.headers.get_content_type()!="application/json":
+            raise ValueError("请求格式无效。")
+        b=json.loads(self.rfile.read(length))
+        if not isinstance(b,dict):
+            raise ValueError("请求必须是对象。")
+        family=self.family()
+        if path=="/api/profile":
+            self.parent_check()
+            return self.respond(201,{"id":store.create(family,string(b,"name",32))})
+        pid=string(b,"profile",40)
+        if path=="/api/live":
+            if not self.server.live_key:
+                return self.respond(503,{"error":"本机尚未开启 GPT-Live 成人测试。"})
+            if self.headers.get("Origin")!="http://"+host:
+                raise PermissionError("来源无效。")
+            store.state(family,pid)
+            sdp=b.get("sdp")
+            if not isinstance(sdp,str) or not sdp.startswith("v=0\r\n"):
+                raise ValueError("无效的语音连接请求。")
+            return self.respond(*live.connect(self.server.live_key,sdp,store.catalog.conversation))
+        if path=="/api/event":
+            e=b.get("event")
+            if not isinstance(e,dict):
+                raise ValueError("缺少事件。")
+            validate_event(e)
+            state,duplicate=store.event(family,pid,e)
+            return self.respond(200,{"state":state,"duplicate":duplicate})
+        if path=="/api/delivery":
+            if b.get("status") not in ("started","complete","interrupted"):
+                raise ValueError("播放状态无效。")
+            store.delivery(family,pid,string(b,"reply",64),b["status"],string(b,"attempt",80))
+            return self.respond(200,{"ok":True})
+        if path=="/api/parent":
+            self.parent_check()
+            op=b.get("op","summary")
+            if op not in ("summary","delete","remember","forget"):
+                raise ValueError("未知操作。")
+            return self.respond(200,store.parent(family,pid,op,string(b,"value",80) if op in ("remember","forget") else ""))
+        raise Missing()
+
+    def handle_request(self):
+        try:
+            self.route()
+        except Missing:
+            self.respond(404,{"error":"记录不存在。"})
+        except Conflict as e:
+            self.respond(409,{"error":str(e)})
+        except PermissionError as e:
+            self.respond(403,{"error":str(e)})
+        except (ValueError,KeyError,TypeError):
+            self.respond(400,{"error":"操作或输入无效，请检查当前活动。"})
+        except (BrokenPipeError,ConnectionResetError):
+            pass
+    do_GET=handle_request
+    do_POST=handle_request
+
+def make_server(port,db_path,catalog=None,live_key=None):
+    server=ThreadingHTTPServer(("127.0.0.1",port),Handler)
+    server.store=Store(db_path,catalog or Catalog())
+    server.live_key=live_key
+    return server
+
+if __name__=="__main__":
+    parser=argparse.ArgumentParser()
+    parser.add_argument("--port",type=int)
+    parser.add_argument("--db")
+    parser.add_argument("--live-test",action="store_true",help="成人模拟 GPT-Live 语音测试")
+    parser.add_argument("--curriculum",default=str(ROOT/"curriculum"),type=type(ROOT))
+    args=parser.parse_args()
+    key=None
+    if args.live_test:
+        from getpass import getpass
+        key=os.getenv("OPENAI_API_KEY") or getpass("输入新 OpenAI 项目密钥（隐藏输入）：").strip()
+        if not key:
+            parser.error("需要项目密钥才能开启 GPT-Live。")
+    port=args.port if args.port is not None else (8766 if args.live_test else 8765)
+    db=args.db or ROOT/".data"/("adult-live-test.sqlite3" if args.live_test else "sparky.sqlite3")
+    server=make_server(port,db,Catalog(args.curriculum),live_key=key)
+    print(f"Sparky  http://127.0.0.1:{server.server_port}",flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+

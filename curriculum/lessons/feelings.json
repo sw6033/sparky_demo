@@ -1,0 +1,76 @@
+{
+  "id": "feelings",
+  "version": 2,
+  "title": "今天的心情",
+  "icon": "🌤️",
+  "activities": {
+    "A": "practice",
+    "B": "explore"
+  },
+  "goals": {
+    "recognize": "meaningful_choice",
+    "express": "express_feeling"
+  },
+  "prompts": {
+    "opening": "我们给故事里的小熊选一个心情吧。你想选哪一个？",
+    "ask": "如果你是小熊，你会怎样说自己的心情？",
+    "practice": "我们练一句说心情的话。你会怎样说？"
+  },
+  "items": [
+    {
+      "id": "happy",
+      "zh": "开心",
+      "en": "happy",
+      "icon": "😊",
+      "aliases": [
+        "高兴",
+        "快乐"
+      ],
+      "english": [
+        "happy",
+        "glad"
+      ],
+      "forms": [
+        "我很开心",
+        "我开心",
+        "我很高兴"
+      ]
+    },
+    {
+      "id": "sad",
+      "zh": "伤心",
+      "en": "sad",
+      "icon": "😢",
+      "aliases": [
+        "难过"
+      ],
+      "english": [
+        "sad",
+        "unhappy"
+      ],
+      "forms": [
+        "我很伤心",
+        "我伤心",
+        "我很难过"
+      ]
+    }
+  ],
+  "meaning_frames": [
+    "I choose {zh}",
+    "I want {zh}",
+    "我选{en}",
+    "我想选{zh}"
+  ],
+  "target_frames": [
+    "我觉得很{zh}"
+  ],
+  "entry_names": [
+    "心情",
+    "情绪"
+  ],
+  "invitation": "小熊今天怎么啦？我们去看看，好吗？",
+  "entry_phrases": [
+    "看看小熊",
+    "听小熊的故事"
+  ]
+}

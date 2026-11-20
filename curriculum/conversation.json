@@ -1,0 +1,19 @@
+[
+  {"word":"小猫","cues":["cat","cats","kitty","kitten","小猫","猫咪","猫"],"offer":"小猫！它在做什么呀？","follow":"喵，小猫轻轻地走。"},
+  {"word":"小狗","cues":["dog","dogs","puppy","puppies","小狗","狗狗","狗"],"offer":"小狗！它会怎么叫呀？","follow":"汪汪，我也来学小狗叫。"},
+  {"word":"兔子","cues":["rabbit","rabbits","bunny","兔子","小兔"],"offer":"兔子有两只长耳朵！","follow":"蹦蹦跳跳的小兔子。"},
+  {"word":"熊猫","cues":["panda","熊猫"],"offer":"熊猫！它的耳朵圆圆的。","follow":"嗯，我们接着说熊猫。"},
+  {"word":"小动物","cues":["animals","animal","小动物","动物"],"offer":"小动物呀。你喜欢哪一个？","follow":"嗯，还有呢？"},
+  {"word":"蓝色","cues":["blue","蓝色","蓝"],"offer":"蓝色，像晴天的天空。","follow":"嗯，蓝蓝的。"},
+  {"word":"红色","cues":["red","红色","红"],"offer":"红色！草莓熟了也是红红的。","follow":"嗯，红红的。"},
+  {"word":"黄色","cues":["yellow","黄色","黄"],"offer":"黄色，像弯弯的香蕉。","follow":"黄黄的，真亮。"},
+  {"word":"颜色","cues":["colors","colours","color","colour","颜色"],"offer":"你喜欢什么颜色呀？","follow":"我喜欢蓝色。"},
+  {"word":"谢谢","cues":["thank you","thanks","谢谢"],"offer":"你在说「谢谢」呀。不客气！","follow":"不客气呀。"},
+  {"word":"早上好","cues":["good morning","早安"],"offer":"早上好呀！","follow":"早呀。"},
+  {"word":"睡着了","cues":["sleeping","asleep","睡着了"],"offer":"嘘，睡着了。我们轻轻说。","follow":"嘘，轻轻的。"},
+  {"word":"晚安","cues":["good night","goodnight","bedtime","晚安"],"offer":"晚安，做个好梦。","follow":"睡个好觉。"},
+  {"word":"再见","cues":["goodbye","bye bye","bye","再见"],"offer":"再见，下次再聊呀。","follow":"拜拜！"},
+  {"word":"喝水","cues":["thirsty","drink water","喝水","口渴","渴了"],"offer":"口渴啦？我们喝口水吧。","follow":"慢慢喝。"},
+  {"word":"苹果","cues":["apple","apples","苹果"],"offer":"苹果！咬一口，咔嚓。","follow":"你喜欢怎么吃苹果呀？"},
+  {"word":"球","cues":["ball","balls","皮球","小球","球"],"offer":"球！轻轻一推，它就滚走啦。","follow":"咕噜噜，球滚到哪儿去了？"}
+]

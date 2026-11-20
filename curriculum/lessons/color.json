@@ -1,0 +1,77 @@
+{
+  "id": "color",
+  "version": 2,
+  "title": "一起画彩虹",
+  "icon": "🎨",
+  "activities": {
+    "A": "practice",
+    "B": "explore"
+  },
+  "goals": {
+    "recognize": "meaningful_choice",
+    "express": "describe_color"
+  },
+  "prompts": {
+    "opening": "画纸准备好了。你想先用哪种颜色？",
+    "ask": "画好了！你会怎么跟朋友说它是什么颜色？",
+    "practice": "我们练一句描述颜色的话。你会怎么说？"
+  },
+  "items": [
+    {
+      "id": "red",
+      "zh": "红色",
+      "en": "red",
+      "icon": "🟥",
+      "aliases": [
+        "红",
+        "红色的"
+      ],
+      "english": [
+        "red"
+      ],
+      "forms": [
+        "这是红色的",
+        "它是红色的",
+        "是红色"
+      ]
+    },
+    {
+      "id": "blue",
+      "zh": "蓝色",
+      "en": "blue",
+      "icon": "🟦",
+      "aliases": [
+        "蓝",
+        "蓝色的"
+      ],
+      "english": [
+        "blue"
+      ],
+      "forms": [
+        "这是蓝色的",
+        "它是蓝色的",
+        "是蓝色"
+      ]
+    }
+  ],
+  "meaning_frames": [
+    "I choose {zh}",
+    "I want {zh}",
+    "我选{en}",
+    "我想选{zh}"
+  ],
+  "target_frames": [
+    "这是{zh}的"
+  ],
+  "entry_names": [
+    "颜色",
+    "彩虹"
+  ],
+  "invitation": "我们一起画条彩虹，好吗？",
+  "entry_phrases": [
+    "画画",
+    "画彩虹",
+    "画一条彩虹",
+    "画个彩虹"
+  ]
+}

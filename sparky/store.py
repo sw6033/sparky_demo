@@ -5,7 +5,7 @@ import time
 from threading import Lock
 from contextlib import contextmanager
 from pathlib import Path
-from . import runtime
+from . import runtime, language
 
 def dump(value):
     return json.dumps(value,ensure_ascii=False,separators=(",",":"),sort_keys=True)
@@ -127,7 +127,7 @@ class Store:
             if op in {"delete","forget"}:
                 with self.history_lock:
                     self.history.pop(pid,None)
-                runtime.say(state,"我们可以继续玩，也可以休息。")
+                runtime.say(state,language.wording(state,"We can keep playing or take a break.","我们可以继续玩，也可以休息。"))
             if op=="delete":
                 db.execute("DELETE FROM profiles WHERE id=?",(pid,))
                 return {}

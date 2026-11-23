@@ -1,4 +1,4 @@
-"""Run with python3 server.py. No third-party Python dependencies."""
+"""Run locally; --cascade additionally requires requirements.txt."""
 import argparse
 import hashlib
 import hmac
@@ -10,7 +10,7 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
-from sparky import brain, live
+from sparky import brain, live, speech
 from sparky.content import Catalog, ROOT
 from sparky.store import Store, Missing, Conflict
 
@@ -77,11 +77,12 @@ class Handler(BaseHTTPRequestHandler):
             if path=="/api/home":
                 family=self.family()
                 return self.respond(200,{"lessons":store.catalog.listing(),"profiles":store.profiles(family),
-                    "model":brain.configured(),"live":bool(self.server.live_key),"pin":bool(os.getenv("SPARKY_PARENT_PIN"))})
+                    "model":brain.configured(),"live":bool(self.server.live_key),
+                    "cascade":bool(self.server.cascade_key),"pin":bool(os.getenv("SPARKY_PARENT_PIN"))})
             if match:=re.fullmatch(r"/api/state/([a-f0-9]{32})",path):
                 return self.respond(200,store.state(self.family(),match[1]))
             assets={"/parent":("parent.html","text/html"),"/parent.js":("parent.js","application/javascript"),"/":("index.html","text/html"),"/app.js":("app.js","application/javascript"),
-                "/live.js":("live.js","application/javascript"),"/style.css":("style.css","text/css")}
+                "/live.js":("live.js","application/javascript"),"/cascade.js":("cascade.js","application/javascript"),"/style.css":("style.css","text/css")}
             if path in assets:
                 name,mime=assets[path]
                 return self.respond(200,(ROOT/"web"/name).read_bytes(),mime+"; charset=utf-8")
@@ -89,7 +90,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Origin") and self.headers["Origin"]!="http://"+host:
             raise PermissionError("来源无效。")
         length=int(self.headers.get("Content-Length","0"))
-        limit=65536 if path=="/api/live" else 16384
+        limit=4*1024*1024+4096 if path=="/api/transcribe" else (65536 if path=="/api/live" else 16384)
         if length<=0 or length>limit or self.headers.get_content_type()!="application/json":
             raise ValueError("请求格式无效。")
         b=json.loads(self.rfile.read(length))
@@ -100,6 +101,22 @@ class Handler(BaseHTTPRequestHandler):
             self.parent_check()
             return self.respond(201,{"id":store.create(family,string(b,"name",32))})
         pid=string(b,"profile",40)
+        if path in {"/api/transcribe", "/api/speech"}:
+            if not self.server.cascade_key:
+                return self.respond(503,{"error":"尚未开启 Cascade 语音。"})
+            if self.headers.get("Origin")!="http://"+host:
+                raise PermissionError("来源无效。")
+            snapshot=store.state(family,pid)
+            if path=="/api/transcribe":
+                text=speech.transcribe(self.server.cascade_key,string(b,"audio",4*1024*1024),string(b,"media",100))
+                return self.respond(200,{"text":text})
+            reply=string(b,"reply",64)
+            if snapshot["reply"]["id"]!=reply:
+                raise Conflict("回复已过期。")
+            audio=speech.synthesize(self.server.cascade_key,snapshot["reply"]["text"])
+            if store.state(family,pid)["reply"]["id"]!=reply:
+                raise Conflict("回复已过期。")
+            return self.respond(200,audio,"audio/wav")
         if path=="/api/live":
             if not self.server.live_key:
                 return self.respond(503,{"error":"本机尚未开启 GPT-Live 成人测试。"})
@@ -139,6 +156,8 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(409,{"error":str(e)})
         except PermissionError as e:
             self.respond(403,{"error":str(e)})
+        except speech.SpeechError as e:
+            self.respond(502,{"error":str(e)})
         except (ValueError,KeyError,TypeError):
             self.respond(400,{"error":"操作或输入无效，请检查当前活动。"})
         except (BrokenPipeError,ConnectionResetError):
@@ -146,28 +165,41 @@ class Handler(BaseHTTPRequestHandler):
     do_GET=handle_request
     do_POST=handle_request
 
-def make_server(port,db_path,catalog=None,live_key=None):
+def make_server(port,db_path,catalog=None,live_key=None,cascade_key=None):
     server=ThreadingHTTPServer(("127.0.0.1",port),Handler)
     server.store=Store(db_path,catalog or Catalog())
     server.live_key=live_key
+    server.cascade_key=cascade_key
     return server
 
 if __name__=="__main__":
     parser=argparse.ArgumentParser()
     parser.add_argument("--port",type=int)
     parser.add_argument("--db")
-    parser.add_argument("--live-test",action="store_true",help="成人模拟 GPT-Live 语音测试")
+    modes=parser.add_mutually_exclusive_group()
+    modes.add_argument("--live-test",action="store_true",help="成人模拟 GPT-Live 语音测试")
+    modes.add_argument("--cascade",action="store_true",help="OpenAI ASR → C/A/B → TTS")
     parser.add_argument("--curriculum",default=str(ROOT/"curriculum"),type=type(ROOT))
     args=parser.parse_args()
     key=None
-    if args.live_test:
+    if args.live_test or args.cascade:
         from getpass import getpass
         key=os.getenv("OPENAI_API_KEY") or getpass("输入新 OpenAI 项目密钥（隐藏输入）：").strip()
         if not key:
-            parser.error("需要项目密钥才能开启 GPT-Live。")
+            parser.error("需要 OpenAI 项目密钥才能开启云端语音。")
+    if args.cascade:
+        try:
+            import websocket
+        except ImportError:
+            parser.error("请先运行 python3 -m pip install -r requirements.txt。")
+        if not os.getenv("SPARKY_MODEL_URL"):
+            os.environ["SPARKY_MODEL_URL"]="https://api.openai.com/v1/chat/completions"
+            os.environ.setdefault("SPARKY_MODEL","gpt-4.1")
+            os.environ["SPARKY_MODEL_KEY"]=key
     port=args.port if args.port is not None else (8766 if args.live_test else 8765)
     db=args.db or ROOT/".data"/("adult-live-test.sqlite3" if args.live_test else "sparky.sqlite3")
-    server=make_server(port,db,Catalog(args.curriculum),live_key=key)
+    server=make_server(port,db,Catalog(args.curriculum),live_key=key if args.live_test else None,
+                       cascade_key=key if args.cascade else None)
     print(f"Sparky  http://127.0.0.1:{server.server_port}",flush=True)
     try:
         server.serve_forever()

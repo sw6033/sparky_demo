@@ -77,3 +77,80 @@ class HTTPTests(unittest.TestCase):
         self.call("/api/parent",{"profile":pid,"op":"delete"})
         self.assertEqual(self.call("/api/home")["profiles"],[])
 
+    def audio_call(self, path, data, origin=None):
+        headers={"Content-Type":"application/json", "Origin":origin or self.base}
+        req=request.Request(self.base+path,data=json.dumps(data).encode(),headers=headers)
+        return self.client.open(req)
+
+    @patch("server.speech.synthesize", return_value=b"RIFF-fixture")
+    @patch("server.speech.transcribe", return_value="我想画画")
+    def test_cascade_uses_committed_reply_and_preserves_delivery_evidence(self, asr, tts):
+        self.server.cascade_key="fixture"
+        self.assertTrue(self.call("/api/home")["cascade"])
+        profile=self.call("/api/profile",{"name":"成人模拟"})["id"]
+        with self.audio_call("/api/transcribe",{"profile":profile,"audio":"YWJj","media":"audio/webm"}) as response:
+            text=json.load(response)["text"]
+        state=self.call("/api/state/"+profile)
+        self.assertIsNone(state["active"])
+        state=self.call("/api/event",{"profile":profile,"event":{"id":"recorded-turn","revision":state["revision"],
+            "type":"utterance","source":"voice","text":text}})["state"]
+        self.assertEqual(state["active"]["lesson"],"color")
+        reply=state["reply"]
+        with self.audio_call("/api/speech",{"profile":profile,"reply":reply["id"],"text":"untrusted override"}) as response:
+            self.assertEqual(response.headers["Content-Type"],"audio/wav")
+            self.assertEqual(response.read(),b"RIFF-fixture")
+        tts.assert_called_once_with("fixture",reply["text"])
+        self.assertEqual(self.call("/api/state/"+profile)["reply"]["delivery"],"pending")
+        for phase in ("started","interrupted"):
+            self.call("/api/delivery",{"profile":profile,"reply":reply["id"],"attempt":"play-once","status":phase})
+        self.assertEqual(self.call("/api/state/"+profile)["reply"]["delivery"],"interrupted")
+
+    @patch("server.speech.synthesize",return_value=b"RIFF-fixture")
+    @patch("server.speech.transcribe",return_value="No, I would like you to speak English.")
+    def test_cascade_language_request_reaches_tts_in_english(self, asr, tts):
+        self.server.cascade_key="fixture"
+        pid=self.call("/api/profile",{"name":"语言回归"})["id"]
+        for _ in range(2):
+            with self.audio_call("/api/transcribe",{"profile":pid,"audio":"YWJj","media":"audio/webm"}) as response:
+                text=json.load(response)["text"]
+            state=self.call("/api/state/"+pid)
+            state=self.call("/api/event",{"profile":pid,"event":{
+                "id":uuid.uuid4().hex,"revision":state["revision"],"type":"utterance","source":"voice","text":text}})["state"]
+            self.assertEqual(state["language_preference"],"english")
+            self.assertIsNone(state["active"])
+            with self.audio_call("/api/speech",{"profile":pid,"reply":state["reply"]["id"]}) as response:
+                self.assertEqual(response.read(),b"RIFF-fixture")
+            self.assertEqual(tts.call_args.args,("fixture",state["reply"]["text"]))
+            self.assertTrue(tts.call_args.args[1].isascii())
+            self.assertIn("I'll speak English",tts.call_args.args[1])
+        self.assertEqual(self.call("/api/parent",{"profile":pid})["observations"],[])
+
+    @patch("server.speech.synthesize")
+    def test_cascade_rejects_bad_origin_foreign_profile_and_stale_reply(self, tts):
+        self.server.cascade_key="fixture"
+        profile=self.call("/api/profile",{"name":"成人模拟"})["id"]
+        reply=self.call("/api/state/"+profile)["reply"]["id"]
+        for data,origin,expected in [
+            ({"profile":profile,"reply":reply},"https://example.com",403),
+            ({"profile":"0"*32,"reply":reply},self.base,404),
+            ({"profile":profile,"reply":"obsolete"},self.base,409),
+        ]:
+            with self.assertRaises(HTTPError) as caught:
+                self.audio_call("/api/speech",data,origin)
+            self.assertEqual(caught.exception.code,expected)
+        tts.assert_not_called()
+
+    @patch("server.speech.synthesize")
+    def test_reply_changed_during_synthesis_is_discarded(self, tts):
+        self.server.cascade_key="fixture"
+        profile=self.call("/api/profile",{"name":"成人模拟"})["id"]
+        snapshot=self.call("/api/state/"+profile)
+        def change_reply(*args):
+            self.call("/api/event",{"profile":profile,"event":{"id":"new-input","revision":snapshot["revision"],
+                "type":"utterance","text":"你好"}})
+            return b"stale-audio"
+        tts.side_effect=change_reply
+        with self.assertRaises(HTTPError) as caught:
+            self.audio_call("/api/speech",{"profile":profile,"reply":snapshot["reply"]["id"]})
+        self.assertEqual(caught.exception.code,409)
+

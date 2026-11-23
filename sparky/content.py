@@ -78,6 +78,20 @@ class Catalog:
                     elif "{" in text or "}" in text:
                         raise ValueError(f"提示语缺少目标绑定: {text}")
                 lesson["rules"][mode] = rule
+            english=lesson.get("prompts_en",{})
+            if not isinstance(english,dict) or any(k not in lesson["prompts"] for k in english):
+                raise ValueError(f"英文提示语引用错误: {lesson['id']}")
+            for key,text in english.items():
+                if not isinstance(text,str) or not text.strip():
+                    raise ValueError(f"英文提示语无效: {lesson['id']} / {key}")
+                steps=[s for rule in lesson["rules"].values() for s in rule["steps"] if s["prompt"]==key]
+                for s in steps:
+                    try:
+                        text.format(**({"target_zh":"示例"} if "expected" in s else {}))
+                    except (KeyError,ValueError,IndexError) as exc:
+                        raise ValueError(f"英文提示语占位符无效: {lesson['id']} / {key}") from exc
+                    if "expected" in s and "{target_zh}" not in text:
+                        raise ValueError(f"英文听辨提示语缺少中文目标: {lesson['id']} / {key}")
             lesson["digest"] = hashlib.sha256(json.dumps(lesson,sort_keys=True).encode()).hexdigest()[:16]
 
     def listing(self):

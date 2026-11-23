@@ -6,6 +6,7 @@ let home, profile, state, recognition, playback, busy = false, ready = false;
 let voice = Boolean(Recognition), quietTurns = 0, listenTimer, pendingReceipt = Promise.resolve();
 let liveCall, creatingProfile, turnQueue = Promise.resolve();
 let resumeLive = false;
+let cascade;
 const status = message => { $("status").textContent = message; };
 
 async function api(path, body) {
@@ -31,10 +32,12 @@ async function ensureProfile() {
   })().finally(()=>{creatingProfile=null;});
   await creatingProfile;
 }
-function courseTurn(text, source, confidence, id=crypto.randomUUID()) {
+function courseTurn(text, source, confidence, id=crypto.randomUUID(), isCurrent=()=>true) {
   const next = turnQueue.then(async () => {
     await pendingReceipt;
+    if (!isCurrent()) throw new DOMException("本轮已取消。","AbortError");
     await ensureProfile();
+    if (!isCurrent()) throw new DOMException("本轮已取消。","AbortError");
     const event={id,revision:state.revision,type:"utterance",text,source,confidence};
     const send=()=>api("/api/event",{profile,event});
     let result;
@@ -163,6 +166,11 @@ function listen() {
 }
 async function submit(raw,source,confidence=1) {
   const text=raw.trim();
+  if (ready && cascade && text) {
+    if (/^(开启语音|打开麦克风|开始语音)[。！!]?$/u.test(text)) return cascade.start();
+    if (/^(关闭语音|关闭麦克风)[。！!]?$/u.test(text)) return cascade.stop("麦克风已关闭。");
+    return cascade.text(text);
+  }
   if(!ready || busy || !text)return;
   if(/^(开启语音|打开麦克风|开始语音)[。！!]?$/u.test(text)){
     if(home.live){await startLive();return;}
@@ -186,7 +194,7 @@ async function submit(raw,source,confidence=1) {
   }finally{busy=false;}
 }
 $("chat").onsubmit=e=>{e.preventDefault();if(!busy && ready){const text=$("input").value;$("input").value="";submit(text,"text");}};
-function suspend(){resumeLive=Boolean(liveCall)||resumeLive;liveCall?.stop("语音已暂停。");stopListening();stopSpeaking();}
+function suspend(){cascade?.stop("语音已暂停，返回后点击「开始说话」。");resumeLive=Boolean(liveCall)||resumeLive;liveCall?.stop("语音已暂停。");stopListening();stopSpeaking();}
 function resume(){
   if(home?.live && ready && resumeLive && !document.hidden){resumeLive=false;startLive();}
   else listenSoon();
@@ -196,11 +204,35 @@ window.addEventListener("pageshow",resume);
 window.addEventListener("pagehide",suspend);
 (async()=>{
   home=await api("/api/home");
-  $("mode").textContent=home.live?"成人模拟测试 · GPT-Live":home.model?"已配置对话模型":"本地课程模式";
+  $("mode").textContent=home.cascade?"Cascade · ASR → C → TTS":home.live?"成人模拟测试 · GPT-Live":home.model?"已配置对话模型":"本地课程模式";
   const saved=localStorage.getItem("sparky.profile");
   profile=(home.profiles.find(p=>p.id===saved)||home.profiles[0])?.id;
   if(profile)state=await api("/api/state/"+profile);
   ready=true;render();
+  if (home.cascade) {
+    voice=false;
+    async function speechRequest(path, data, signal) {
+      await ensureProfile();
+      const response=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({profile,...data}),signal});
+      if (!response.ok) throw new Error((await response.json()).error || "语音请求失败。");
+      return response;
+    }
+    cascade=new CascadeVoice({
+      transcribe:async(audio,media,signal)=>(await speechRequest("/api/transcribe",{audio,media},signal)).json(),
+      speech:async(reply,signal)=>(await speechRequest("/api/speech",{reply},signal)).blob(),
+      turn:(text,source,isCurrent)=>courseTurn(text,source,undefined,crypto.randomUUID(),isCurrent),
+      delivery:(playback,phase)=>receipt({...playback,profile},phase),
+      status, heard:text=>{$("heard").textContent="你说「"+text+"」";},
+      changed:recording=>{$("record").textContent=recording?"说完了":"开始说话";}
+    });
+    $("cascadeControls").hidden=false;
+    $("record").onclick=()=>cascade.recording?cascade.finish():cascade.start();
+    $("interrupt").onclick=()=>cascade.start();
+    $("stopVoice").onclick=()=>cascade.stop();
+    status("点击「开始说话」开启录音，也可以打字。先用成人模拟语音测试。");
+    return;
+  }
   if(home.live){resumeLive=document.hidden;await startLive();}
   else if(voice){status("允许浏览器使用麦克风后，就可以直接和 Sparky 说话。");speakReply();}
   else status("当前浏览器可用文字对话，按回车发送。");

@@ -1,6 +1,6 @@
 {
   "id": "feelings",
-  "version": 2,
+  "version": 3,
   "title": "今天的心情",
   "icon": "🌤️",
   "activities": {
@@ -15,6 +15,11 @@
     "opening": "我们给故事里的小熊选一个心情吧。你想选哪一个？",
     "ask": "如果你是小熊，你会怎样说自己的心情？",
     "practice": "我们练一句说心情的话。你会怎样说？"
+  },
+  "prompts_en": {
+    "opening": "Let's choose a feeling for the bear in our story. How does the bear feel?",
+    "ask": "If you were the bear, how would you say how you feel in Chinese?",
+    "practice": "Let's talk about a feeling in Chinese. What would you say?"
   },
   "items": [
     {

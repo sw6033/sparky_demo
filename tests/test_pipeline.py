@@ -82,7 +82,7 @@ class PipelineTests(unittest.TestCase):
         self.turn("utterance",text="这是小猫",confidence=0.1)
         self.turn("utterance",text="这是小猫",speaker="unknown")
         self.turn("silence")
-        self.assertIn("停一停",self.snapshot()["reply"]["text"])
+        self.assertIn("take a break",self.snapshot()["reply"]["text"])
         self.turn("utterance",text="什么意思")
         self.turn("utterance",text="不想跟读")
         self.assertEqual(self.snapshot()["active"]["step"],1)
@@ -116,15 +116,15 @@ class PipelineTests(unittest.TestCase):
         self.store=Store(self.db,Catalog(folder))
         self.start(lesson="paint")
         self.turn("pause")
-        copy["version"]=2
-        copy["prompts"]["opening"]="新版情境"
+        copy["version"]+=1
+        copy["prompts_en"]["opening"]="A new scene"
         path.write_text(json.dumps(copy))
         self.store=Store(self.db,Catalog(folder))
         self.turn("resume")
-        self.assertNotIn("新版",self.snapshot()["active"]["question"])
+        self.assertNotIn("A new scene",self.snapshot()["active"]["question"])
         self.turn("finish")
         self.start(lesson="paint")
-        self.assertIn("新版",self.snapshot()["active"]["question"])
+        self.assertIn("A new scene",self.snapshot()["active"]["question"])
 
     def test_bad_template_rejected_before_session(self):
         folder=Path(self.tmp.name)/"curriculum"
@@ -174,7 +174,8 @@ class PipelineTests(unittest.TestCase):
         self.turn("utterance",text="继续")
         self.assertEqual(self.snapshot()["active"]["step"],2)
 
-    def test_teach_in_conversation_without_advancing_an_activity(self):
+    def test_chinese_preference_offline_examples_do_not_advance_an_activity(self):
+        self.turn("utterance",text="请说中文")
         def say(text):
             return self.turn("utterance", text=text)["reply"]["text"]
         self.assertIn("小猫", say("I saw a cat!"))
@@ -192,6 +193,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(self.snapshot()["active"]["step"],2)
 
     def test_activity_lifecycle_by_conversation(self):
+        self.turn("utterance",text="请说中文")
         def talk(text):
             return self.turn("utterance",text=text)
         greeting=talk("你好，Sparky！")
@@ -209,3 +211,112 @@ class PipelineTests(unittest.TestCase):
         self.assertIsNotNone(talk("继续")["active"])
         self.assertIsNone(talk("不玩了")["active"])
         self.assertEqual(talk("找小猫")["active"]["lesson"],"animals")
+
+    def test_english_request_from_screenshot_survives_retries_and_restart(self):
+        self.assertEqual(self.snapshot()["language_preference"],"bilingual")
+        with patch("sparky.brain.propose") as model:
+            for _ in range(2):
+                event=self.event("utterance",text="No, I would like you to speak English.",source="voice")
+                state,duplicate=self.store.event("family",self.pid,event)
+                self.assertFalse(duplicate)
+                self.assertEqual(state["language_preference"],"english")
+                self.assertIn("I'll speak English",state["reply"]["text"])
+                replay,duplicate=self.store.event("family",self.pid,event)
+                self.assertTrue(duplicate)
+                self.assertEqual(replay,state)
+            model.assert_not_called()
+        self.store=Store(self.db,Catalog())
+        self.assertEqual(self.snapshot()["language_preference"],"english")
+        self.assertEqual(self.turn("utterance",text="hello")["reply"]["text"],"Hi! I'm here.")
+        self.assertFalse(self.observations())
+
+    def test_language_change_preserves_activity_and_is_not_learning_evidence(self):
+        self.start()
+        self.turn("select",item="dog")
+        self.start("A")
+        self.turn("help")
+        with self.store.db() as db:
+            before=self.store.load(db,"family",self.pid)
+        records=self.observations()
+        self.turn("utterance",text="请说英文")
+        with self.store.db() as db:
+            after=self.store.load(db,"family",self.pid)
+        self.assertEqual(before["active"],after["active"])
+        self.assertEqual(before["paused"],after["paused"])
+        self.assertEqual(records,self.observations())
+        self.assertEqual(self.turn("utterance",text="请说中文")["language_preference"],"chinese")
+
+    def test_bilingual_chat_is_contextual_not_forced_by_keywords(self):
+        replies=["Oh, a cat! What was it doing?",
+                 'A sleepy cat! In Chinese, we can say "小猫睡着了".',
+                 "You're welcome!"]
+        with patch("sparky.brain.propose",side_effect=[{"intent":"chat","reply":r} for r in replies]) as model:
+            for text,reply in zip(["I saw a cat!","How do I say the cat is sleeping in Chinese?","Thank you!"],replies):
+                self.assertEqual(self.turn("utterance",text=text)["reply"]["text"],reply)
+            context=model.call_args.args[1]
+            self.assertEqual(context["language_preference"],"bilingual")
+            self.assertEqual(context["recent_turns"][-1]["reply"],replies[1])
+        self.assertIsNone(self.snapshot()["active"])
+        self.assertFalse(self.observations())
+
+    def test_semantic_language_preference_and_context(self):
+        with patch("sparky.brain.propose",return_value={"intent":"language","preference":"english"}):
+            state=self.turn("utterance",text="Could we stick to English for a bit?")
+        self.assertEqual(state["language_preference"],"english")
+        with patch("sparky.brain.propose",return_value={"intent":"chat","reply":"What happened next?"}) as model:
+            self.turn("utterance",text="I saw a cat")
+            self.assertEqual(model.call_args.args[1]["language_preference"],"english")
+        with patch("sparky.brain.propose",return_value={"intent":"language","preference":"bilingual"}):
+            state=self.turn("utterance",text="Let's use both languages again")
+        self.assertEqual(state["language_preference"],"bilingual")
+        self.assertFalse(self.observations())
+
+    def test_unavailable_model_does_not_force_chinese_or_change_preference(self):
+        for text in ["I saw a cat", "I don't like blue", "Thank you!", "I like English",
+                     "Don't speak English", 'She said "speak English"', "How do you say English in Chinese?"]:
+            with self.subTest(text=text):
+                state=self.turn("utterance",text=text)
+                self.assertTrue(state["reply"]["text"].isascii())
+                self.assertEqual(state["language_preference"],"bilingual")
+        self.turn("utterance",text="Speak English")
+        self.assertTrue(self.turn("utterance",text="I saw a cat")["reply"]["text"].isascii())
+        self.assertFalse(self.observations())
+
+    def test_activity_english_scaffolding_keeps_chinese_targets_and_evidence(self):
+        state=self.start(lesson="body")
+        self.assertIn('Listen: "手"',state["reply"]["text"])
+        self.assertNotIn("hand",state["reply"]["text"])
+        self.turn("utterance",text="hand")
+        self.assertIn('"鼻子"',self.snapshot()["reply"]["text"])
+        self.assertEqual(self.observations()[0]["kind"],"identified")
+        self.turn("finish")
+        self.start("A")
+        hint=self.turn("help")["reply"]
+        self.assertEqual(hint["text"],'You can say: "这是小猫".')
+        for phase in ("started","complete"):
+            self.store.delivery("family",self.pid,hint["id"],phase,"test-play")
+        self.turn("utterance",text="这是小猫")
+        self.assertIn("imitation",[r["kind"] for r in self.observations()])
+
+    def test_old_profile_and_activity_without_language_fields(self):
+        self.start()
+        with self.store.db() as db:
+            state=self.store.load(db,"family",self.pid)
+            state.pop("language_preference")
+            state["active"]["lesson"].pop("prompts_en")
+            self.store.save(db,self.pid,state)
+        self.store=Store(self.db,Catalog())
+        state=self.turn("utterance",text="继续")
+        self.assertEqual(state["language_preference"],"bilingual")
+        self.assertTrue(state["reply"]["text"].isascii())
+        self.assertEqual(state["active"]["step"],1)
+
+    def test_english_recovery_stays_english_in_activity(self):
+        self.turn("utterance",text="Speak English")
+        self.start()
+        for event in ["silence","help","pause","resume","refuse","finish"]:
+            state=self.turn(event)
+            if event=="help":
+                self.assertTrue(state["reply"]["text"].startswith("You can say:"))
+            else:
+                self.assertTrue(state["reply"]["text"].isascii(),event)

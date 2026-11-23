@@ -1,6 +1,6 @@
 {
   "id": "animals",
-  "version": 2,
+  "version": 3,
   "title": "小动物见面会",
   "icon": "🐾",
   "activities": {
@@ -15,6 +15,11 @@
     "opening": "谁在草丛里？你想先找哪只小动物？",
     "ask": "你找到了它！你会怎么用中文向朋友介绍它？",
     "practice": "我们练一句介绍小动物的话。你想怎么说？"
+  },
+  "prompts_en": {
+    "opening": "Who's hiding in the grass? Which animal shall we find first?",
+    "ask": "You found it! How would you introduce it to a friend in Chinese?",
+    "practice": "Let's practice introducing an animal in Chinese. What would you say?"
   },
   "items": [
     {

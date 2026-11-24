@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "target_age_band": "5-8",
+  "session_rhythm": {
+    "warmup_turns": 2,
+    "max_new_targets_per_session": 3,
+    "bridge_interval_turns": 2,
+    "cooldown_after_decline_turns": 3,
+    "max_dynamic_personal_words_per_session": 2,
+    "max_snowball_items_in_context": 6
+  },
+  "mastery_stages": [
+    "unseen",
+    "exposed",
+    "scaffolded",
+    "practiced",
+    "mastered"
+  ],
+  "teaching_moves": {
+    "companionship_only": "Pure English companionship: listen, react warmly with a brief comment or shared imagination, and weave in already-familiar Chinese only if completely natural.",
+    "expose_in_context": "Bridge from what the child is talking about to drop ONE Chinese word or pattern naturally with a fun meaning hook and show its visual card. Do not quiz yet.",
+    "either_or_choice": "Offer a playful two-way choice in Chinese ('A 还是 B?') backed by two visual cards so the child can answer with low pressure.",
+    "cloze_starter": "Set up a clear English context and start the Chinese frame, leaving the last piece open for the child to complete.",
+    "recast_expand": "When the child answers in English or says a single Chinese word, affirm their meaning and naturally echo the full Chinese phrase without scolding.",
+    "situational_invite": "Create a quick playful moment where the child can use a previously scaffolded phrase meaningfully without hearing the full answer first; give a gentle hint if they hesitate.",
+    "playlet_turn": "Run one lively turn of an invited 2-4 turn conversational mini-game, keeping it light and immediately droppable if the child switches topics.",
+    "snowball_code_switch": "Naturally sprinkle a familiar/mastered Chinese word or greeting inside normal English chat as shared buddy vocabulary."
+  },
+  "mastery_ladder": {
+    "unseen": {
+      "label": "未接触",
+      "allowed_moves": ["expose_in_context"],
+      "goal": "借聊天话头自然带出中文与趣味记忆钩子，弹出词卡建立第一印象，不施压测试。"
+    },
+    "exposed": {
+      "label": "已听过示范",
+      "allowed_moves": ["either_or_choice", "cloze_starter", "recast_expand", "playlet_turn"],
+      "goal": "通过二选一（A还是B）或半句留白（Cloze），引导第一次低门槛开口或有意义回应。"
+    },
+    "scaffolded": {
+      "label": "引导下可说",
+      "allowed_moves": ["situational_invite", "playlet_turn", "recast_expand"],
+      "goal": "在有趣的小情境里不提前喂答案，邀请孩子用出来；卡壳时立刻给半句提示。"
+    },
+    "practiced": {
+      "label": "情境中会用",
+      "allowed_moves": ["situational_invite", "snowball_code_switch"],
+      "goal": "在隔轮新语境或下一场对话中自然复现；日常英文聊天可开始夹带该词。"
+    },
+    "mastered": {
+      "label": "日常熟词默契",
+      "allowed_moves": ["snowball_code_switch"],
+      "goal": "进入长期熟词池，在日常陪伴交流中自然混说并作为新句块的组合素材。"
+    }
+  },
+  "scaffolding_principles": [
+    "Decouple topic maturity from Mandarin difficulty: match a 5-8 year old's curiosity and humor in English while keeping Mandarin targets short and achievable.",
+    "Comprehension precedes production: never ask a cold 'How do you say X in Chinese?' before modeling X in a meaningful context.",
+    "Use vivid literal hooks (e.g. 熊猫 = bear-cat, 恐龙 = mighty dragon) instead of abstract grammar explanations.",
+    "Respect child agency: if the child declines Chinese, shares strong feelings, or pivots to their own story, drop the teaching move immediately and be a great friend."
+  ]
+}

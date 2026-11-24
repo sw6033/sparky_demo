@@ -1,0 +1,378 @@
+{
+  "version": 1,
+  "title": "Sparky 5-8岁双语伙伴核心大纲",
+  "units": [
+    {
+      "id": "u1_greetings",
+      "order": 1,
+      "title": "Secret Handshake & Hello",
+      "title_zh": "伙伴暗号与问候",
+      "communicative_goal": "Exchange friendly Chinese greetings, share how you're doing, and introduce yourself.",
+      "prerequisites": [],
+      "unlock_next": {
+        "min_patterns_practiced": 1,
+        "min_vocab_practiced": 2
+      },
+      "topic_bridges": [
+        "saying hello",
+        "names and nicknames",
+        "how today went",
+        "secret handshakes",
+        "wrapping up or saying bye"
+      ],
+      "patterns": [
+        {
+          "id": "pat_hello_name",
+          "zh": "你好，我是{name}",
+          "pinyin": "nǐ hǎo, wǒ shì {name}",
+          "en": "Hello, I am {name}",
+          "emoji": "🪪",
+          "slot": "name_or_role",
+          "examples": ["你好，我是 Sparky", "你好，我是 Leo"],
+          "scaffolds": {
+            "expose": "In Chinese, friends introduce themselves like this: 你好，我是 Sparky!",
+            "cloze": "Your turn to try the intro — 你好，我是…",
+            "invite": "How would you greet our new friend and tell them who you are in Chinese?"
+          }
+        },
+        {
+          "id": "pat_i_feel_good",
+          "zh": "我{state}",
+          "pinyin": "wǒ {state}",
+          "en": "I am {state}",
+          "emoji": "✨",
+          "slot": "state_word",
+          "examples": ["我很好", "我很开心"],
+          "scaffolds": {
+            "expose": "When things feel awesome, you can say: 我很好!",
+            "cloze": "Tell me how you feel: 我…",
+            "invite": "If someone asks how you're doing today, what can you say in Chinese?"
+          }
+        }
+      ],
+      "vocabulary": [
+        {
+          "id": "voc_nihao",
+          "zh": "你好",
+          "pinyin": "nǐ hǎo",
+          "en": "hello",
+          "emoji": "👋",
+          "hook": "Literally 'you good!' — our instant friend code."
+        },
+        {
+          "id": "voc_henhao",
+          "zh": "很好",
+          "pinyin": "hěn hǎo",
+          "en": "doing great",
+          "emoji": "🌟",
+          "hook": "Double thumbs-up energy!"
+        },
+        {
+          "id": "voc_pengyou",
+          "zh": "好朋友",
+          "pinyin": "hǎo péngyou",
+          "en": "good friend",
+          "emoji": "🤝",
+          "hook": "hǎo means good — that makes us good buddies!"
+        },
+        {
+          "id": "voc_zaijian",
+          "zh": "再见",
+          "pinyin": "zài jiàn",
+          "en": "see you again",
+          "emoji": "🚀",
+          "hook": "Literally 'again see' — because friends always meet again!"
+        }
+      ],
+      "playlets": [
+        {
+          "id": "play_space_doorbell",
+          "title": "Mystery Doorbell",
+          "title_zh": "神秘门铃对暗号",
+          "when_to_invite": "When the child is playful and ready for 2-3 quick pretend knocks.",
+          "setup_brief": "Silly visitors (a space robot, a sleepy dragon, a detective) ring the doorbell; trade '你好，我是…' and '好朋友' passwords.",
+          "target_ids": ["pat_hello_name", "voc_nihao", "voc_pengyou"]
+        }
+      ]
+    },
+    {
+      "id": "u2_favorites",
+      "order": 2,
+      "title": "Awesome Favorites",
+      "title_zh": "我最喜欢的事物",
+      "communicative_goal": "Talk about favorite animals, dinosaurs, or personal interests using '我喜欢…' and ask a friend back.",
+      "prerequisites": ["u1_greetings"],
+      "unlock_next": {
+        "min_patterns_practiced": 1,
+        "min_vocab_practiced": 2
+      },
+      "topic_bridges": [
+        "pets and animals",
+        "dinosaurs and dragons",
+        "favorite toys or games",
+        "zoo or nature",
+        "things I love"
+      ],
+      "patterns": [
+        {
+          "id": "pat_i_like",
+          "zh": "我喜欢{item}",
+          "pinyin": "wǒ xǐhuān {item}",
+          "en": "I like {item}",
+          "emoji": "💛",
+          "slot": "interest_noun",
+          "examples": ["我喜欢恐龙", "我喜欢小猫", "我喜欢熊猫"],
+          "scaffolds": {
+            "expose": "To say what you love in Chinese, use 我喜欢 — like 我喜欢恐龙!",
+            "cloze": "Try telling me yours: 我喜欢…",
+            "invite": "Pick your favorite and tell me in a full Chinese phrase!"
+          }
+        },
+        {
+          "id": "pat_do_you_like",
+          "zh": "你喜欢{item}吗？",
+          "pinyin": "nǐ xǐhuān {item} ma?",
+          "en": "Do you like {item}?",
+          "emoji": "🤔",
+          "slot": "interest_noun",
+          "examples": ["你喜欢小狗吗？", "你喜欢恐龙吗？"],
+          "scaffolds": {
+            "expose": "Adding 吗 at the end turns anything into a question: 你喜欢小狗吗？",
+            "cloze": "Try quizzing me: 你喜欢…吗？",
+            "invite": "Ask me in Chinese if I like one of these!"
+          }
+        }
+      ],
+      "vocabulary": [
+        {
+          "id": "voc_dino",
+          "zh": "恐龙",
+          "pinyin": "kǒng lóng",
+          "en": "dinosaur",
+          "emoji": "🦖",
+          "hook": "lóng means dragon — dinosaurs are 'mighty dragons' in Chinese!"
+        },
+        {
+          "id": "voc_panda",
+          "zh": "熊猫",
+          "pinyin": "xióng māo",
+          "en": "panda",
+          "emoji": "🐼",
+          "hook": "Literally 'bear-cat' — half bear, half cat!"
+        },
+        {
+          "id": "voc_cat",
+          "zh": "小猫",
+          "pinyin": "xiǎo māo",
+          "en": "kitty / cat",
+          "emoji": "🐱",
+          "hook": "māo sounds almost just like 'meow'!"
+        },
+        {
+          "id": "voc_dog",
+          "zh": "小狗",
+          "pinyin": "xiǎo gǒu",
+          "en": "puppy / dog",
+          "emoji": "🐶",
+          "hook": "xiǎo means little — a little adventure pup!"
+        }
+      ],
+      "playlets": [
+        {
+          "id": "play_would_you_rather",
+          "title": "Ultimate Would-You-Rather",
+          "title_zh": "终极二选一挑战",
+          "when_to_invite": "After hearing at least one animal/interest word, for a lively 2-3 turn preference game.",
+          "setup_brief": "Pop up two fun creature cards (e.g. skateboarding 恐龙 vs jetpack 熊猫) and trade picks with '我喜欢…' and '你喜欢…吗？'.",
+          "target_ids": ["pat_i_like", "pat_do_you_like", "voc_dino", "voc_panda", "voc_cat", "voc_dog"]
+        }
+      ]
+    },
+    {
+      "id": "u3_requests",
+      "order": 3,
+      "title": "Magic Snack Counter",
+      "title_zh": "神奇点心铺",
+      "communicative_goal": "Ask for snacks, drinks, or items using '我要…' / '我要吃…' and thank a friend.",
+      "prerequisites": ["u2_favorites"],
+      "unlock_next": {
+        "min_patterns_practiced": 1,
+        "min_vocab_practiced": 2
+      },
+      "topic_bridges": [
+        "snacks and treats",
+        "lunch or dinner",
+        "feeling hungry or thirsty",
+        "ice cream and fruit",
+        "pretend kitchen or cafe"
+      ],
+      "patterns": [
+        {
+          "id": "pat_i_want",
+          "zh": "我要{item}",
+          "pinyin": "wǒ yào {item}",
+          "en": "I want / I'd like {item}",
+          "emoji": "🛎️",
+          "slot": "food_or_item",
+          "examples": ["我要冰淇淋", "我要苹果"],
+          "scaffolds": {
+            "expose": "At a Chinese snack stand, the magic ordering phrase is 我要 — like 我要冰淇淋!",
+            "cloze": "Ring the bell and order: 我要…",
+            "invite": "What would you order from our snack counter in Chinese?"
+          }
+        },
+        {
+          "id": "pat_want_to_eat",
+          "zh": "我要吃{item}",
+          "pinyin": "wǒ yào chī {item}",
+          "en": "I want to eat {item}",
+          "emoji": "😋",
+          "slot": "food_item",
+          "examples": ["我要吃西瓜", "我要吃苹果"],
+          "scaffolds": {
+            "expose": "chī means eat, so 'I want to eat watermelon' is 我要吃西瓜!",
+            "cloze": "Tell the chef: 我要吃…",
+            "invite": "Tell me what snack you want to eat in Chinese!"
+          }
+        }
+      ],
+      "vocabulary": [
+        {
+          "id": "voc_icecream",
+          "zh": "冰淇淋",
+          "pinyin": "bīng qí lín",
+          "en": "ice cream",
+          "emoji": "🍦",
+          "hook": "bīng means ice — icy sweet swirl!"
+        },
+        {
+          "id": "voc_apple",
+          "zh": "苹果",
+          "pinyin": "píng guǒ",
+          "en": "apple",
+          "emoji": "🍎",
+          "hook": "guǒ means fruit — super crunchy!"
+        },
+        {
+          "id": "voc_watermelon",
+          "zh": "西瓜",
+          "pinyin": "xī guā",
+          "en": "watermelon",
+          "emoji": "🍉",
+          "hook": "Literally 'west melon' — juicy summer slice!"
+        },
+        {
+          "id": "voc_thanks",
+          "zh": "谢谢",
+          "pinyin": "xiè xie",
+          "en": "thank you",
+          "emoji": "🎉",
+          "hook": "Quick double word — xiè xie!"
+        }
+      ],
+      "playlets": [
+        {
+          "id": "play_snack_shop",
+          "title": "Sparky's Midnight Snack Stand",
+          "title_zh": "狐狸点心摊",
+          "when_to_invite": "When talking about food or treats; take turns ordering silly combos.",
+          "setup_brief": "Show snack cards and build a ridiculous dream sundae or fruit platter using '我要…', '我要吃…', and '谢谢'.",
+          "target_ids": ["pat_i_want", "pat_want_to_eat", "voc_icecream", "voc_apple", "voc_watermelon", "voc_thanks"]
+        }
+      ]
+    },
+    {
+      "id": "u4_descriptions",
+      "order": 4,
+      "title": "Colors, Numbers & Explorer Gear",
+      "title_zh": "色彩数字与探险装备",
+      "communicative_goal": "Describe colors, count items, and react with excitement in Chinese.",
+      "prerequisites": ["u3_requests"],
+      "unlock_next": {
+        "min_patterns_practiced": 1,
+        "min_vocab_practiced": 2
+      },
+      "topic_bridges": [
+        "colors and drawing",
+        "lego or building blocks",
+        "counting things",
+        "packing for a trip or adventure",
+        "cool gadgets or clothes"
+      ],
+      "patterns": [
+        {
+          "id": "pat_this_is_color",
+          "zh": "这是{color}的",
+          "pinyin": "zhè shì {color} de",
+          "en": "This is {color}",
+          "emoji": "🎨",
+          "slot": "color_word",
+          "examples": ["这是红色的", "这是蓝色的"],
+          "scaffolds": {
+            "expose": "To point out a color in Chinese, say 这是红色的 — 'This is red'!",
+            "cloze": "Spot the color: 这是…的",
+            "invite": "How would you describe that color in Chinese?"
+          }
+        },
+        {
+          "id": "pat_count_items",
+          "zh": "{count}个{item}",
+          "pinyin": "{count} gè {item}",
+          "en": "{count} {item}(s)",
+          "emoji": "🎒",
+          "slot": "counted_item",
+          "examples": ["一个苹果", "三个冰淇淋"],
+          "scaffolds": {
+            "expose": "Chinese puts little helper word 个 between the number and the thing: 三个苹果!",
+            "cloze": "Pack them in: …个…",
+            "invite": "Count how many you want to pack in Chinese!"
+          }
+        }
+      ],
+      "vocabulary": [
+        {
+          "id": "voc_red",
+          "zh": "红色",
+          "pinyin": "hóng sè",
+          "en": "red",
+          "emoji": "🔴",
+          "hook": "hóng is red, sè means color!"
+        },
+        {
+          "id": "voc_blue",
+          "zh": "蓝色",
+          "pinyin": "lán sè",
+          "en": "blue",
+          "emoji": "🔵",
+          "hook": "Deep ocean and sky blue!"
+        },
+        {
+          "id": "voc_numbers_123",
+          "zh": "一、二、三",
+          "pinyin": "yī, èr, sān",
+          "en": "one, two, three",
+          "emoji": "🔢",
+          "hook": "Rocket countdown backwards: 三、二、一!"
+        },
+        {
+          "id": "voc_so_cool",
+          "zh": "太酷了",
+          "pinyin": "tài kù le",
+          "en": "so cool!",
+          "emoji": "😎",
+          "hook": "kù was borrowed straight from English 'cool'!"
+        }
+      ],
+      "playlets": [
+        {
+          "id": "play_explorer_pack",
+          "title": "Explorer Backpack Check",
+          "title_zh": "探险背包大点名",
+          "when_to_invite": "When talking about adventures, building, or colors.",
+          "setup_brief": "Pack colorful supplies into our adventure backpack using colors, numbers ('三个苹果', '这是蓝色的'), and '太酷了!'.",
+          "target_ids": ["pat_this_is_color", "pat_count_items", "voc_red", "voc_blue", "voc_numbers_123", "voc_so_cool"]
+        }
+      ]
+    }
+  ]
+}

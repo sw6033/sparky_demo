@@ -1,6 +1,6 @@
 """One companion, two activity modes. Activity decisions consume lesson data only."""
 import uuid
-from . import language, segments
+from . import language, segments, care
 from .content import compile_answers, norm
 
 def uid():
@@ -189,6 +189,14 @@ def advance(state,event,catalog,decision):
     action,data=decision
     a=state["active"]
     records=[]
+    if action=="support":
+        if a or state["paused"]:
+            state["care_hold"]={"active":a,"paused":state["paused"]}
+            state["active"]=state["paused"]=None
+        state["care_kind"]=data
+        say(state,care.fallback(state,data))
+        state["revision"]+=1
+        return records
     if action=="language":
         if data not in language.PREFERENCES:
             raise ValueError("未知语言偏好。")
@@ -198,12 +206,23 @@ def advance(state,event,catalog,decision):
         return records
     state.pop("invitation", None)
     if action=="start":
+        state.pop("care_hold",None)
+        state.pop("care_kind",None)
         start(state,data or event,catalog)
     elif action=="change_activity":
         complete(state,a or state["paused"],"changed")
         state["paused"]=None
         start(state,data,catalog)
     elif action in {"resume","return_story"}:
+        if action=="resume" and state.get("care_hold"):
+            held=state.pop("care_hold")
+            state["active"],state["paused"]=held["active"],held["paused"]
+            state.pop("care_kind",None)
+            if state["active"] is None:
+                state["active"],state["paused"]=state["paused"],None
+            say(state,language.wording(state,"We can pick up here. ","我们从这里继续。")+prompt(state["active"],state))
+            state["revision"]+=1
+            return records
         if action=="return_story":
             complete(state,a,"returned_to_story")
             a=None
@@ -213,6 +232,8 @@ def advance(state,event,catalog,decision):
         state["paused"]=None
         say(state,language.wording(state,"Welcome back! ","回来啦！")+prompt(a,state))
     elif action=="finish":
+        state.pop("care_hold",None)
+        state.pop("care_kind",None)
         target=a or state["paused"]
         if not target:
             say(state,language.wording(state,"Okay, let's take a break.","好的，我们休息一下。"))
@@ -326,7 +347,7 @@ def public(state):
                 "options":[{k:x[k] for k in ("id","zh","icon")} for x in candidates(a)]}
     reply = dict(state["reply"])
     reply["text"] = conversation_copy(reply["text"])
-    return {**state,"language_preference":language.preference(state),"reply":reply,"active":view(state["active"]),"paused":view(state["paused"])}
+    return {**state,"care_hold":bool(state.get("care_hold")),"language_preference":language.preference(state),"reply":reply,"active":view(state["active"]),"paused":view(state["paused"])}
 
 def conversation_copy(text):
     # Older checkpoints may contain prompts written for the original card UI.

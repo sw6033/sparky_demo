@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 from contextlib import contextmanager
 from pathlib import Path
-from . import runtime, language, brain, diagnostics, planning, segments
+from . import runtime, language, brain, diagnostics, planning, segments, care
 
 def dump(value):
     return json.dumps(value,ensure_ascii=False,separators=(",",":"),sort_keys=True)
@@ -195,7 +195,7 @@ class Store:
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             state=self.load(db,family,pid)
-            if op in {"delete","forget"}:
+            if op in {"delete","forget","forget_context"}:
                 with self.history_lock:
                     self.history.pop(pid,None)
                 runtime.say(state,language.wording(state,"We can keep playing or take a break.","我们可以继续玩，也可以休息。"))
@@ -211,14 +211,17 @@ class Store:
                 db.execute("INSERT INTO memories VALUES(?,?,?)",(pid,runtime.uid(),value))
             elif op=="forget":
                 db.execute("DELETE FROM memories WHERE profile=? AND id=?",(pid,value))
-            if op in {"forget","remember"}:
+            elif op=="learner":
+                state["learner"]=care.validate_learner(value)
+            if op in {"forget","remember","forget_context","learner"}:
                 # Invalidate an in-flight response based on a previous memory.
                 state["revision"]+=1
                 self.save(db,pid,state)
             rows=db.execute("""SELECT json_extract(record,'$.label') AS goal,
                     json_extract(record,'$.kind') AS kind, count(*) AS n
                     FROM observations WHERE profile=? GROUP BY goal,kind ORDER BY goal,kind""",(pid,))
-            return {"observations":[dict(r) for r in rows],"memories":[dict(r) for r in db.execute(
+            return {"learner":care.learner(state),"conversation_summary":state.get("conversation_summary",{}),
+                    "observations":[dict(r) for r in rows],"memories":[dict(r) for r in db.execute(
                 "SELECT id,value FROM memories WHERE profile=? ORDER BY rowid",(pid,))]}
 
     def _trace(self,db,pid,turn,values):
@@ -248,7 +251,9 @@ class Store:
             return
         with self.history_lock:
             history=deepcopy(self.history.get(pid,(0,[]))[1])
-        older=[t for t in history[:-8] if t["revision"]>state.get("summary_revision",0)]
+        # Checkpoint short conversations too, without putting summarization on
+        # the speaking path. Recent turns remain available until summary commits.
+        older=[t for t in history[:-2] if t["revision"]>state.get("summary_revision",0)]
         if len(older)<2:
             return
         job=(family,state.get("context_epoch",0),state.get("summary_revision",0),older,state.get("session_notes",[]))

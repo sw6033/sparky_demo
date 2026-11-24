@@ -1,6 +1,6 @@
 """Preview legal tools before one core-agent call; commit remains in Store."""
 from copy import deepcopy
-from . import brain, diagnostics, language, runtime, segments
+from . import brain, diagnostics, language, runtime, segments, care
 
 class Decision(tuple):
     def __new__(cls, action, data=None, reply=None):
@@ -16,6 +16,8 @@ def signature(decision):
         return {"intent":action,**data}
     if action=="language":
         return {"intent":action,"preference":data}
+    if action=="support":
+        return {"intent":action,"kind":data}
     return {"intent":action}
 
 def preview(state,event,catalog,decision):
@@ -53,6 +55,9 @@ def tools_for(state,event,catalog,local):
     a=state["active"]
     paused=state["paused"]
     choices=[("chat",None),("finish",None)]
+    choices.extend(("support",kind) for kind in sorted(care.KINDS))
+    if state.get("care_hold"):
+        choices.append(("resume",None))
     choices.extend(("language",v) for v in ("bilingual","english","chinese"))
     if a:
         choices.extend((v,None) for v in ("help","meaning","pause","refuse","clarify"))
@@ -98,6 +103,9 @@ def reply_error(reply,contract):
     return None
 
 def plan(state,event,memory,history,learning,catalog):
+    if event["type"]=="utterance" and event.get("speaker","child")=="child" and care.immediate(event.get("text","")):
+        diagnostics.note("routing",source="local_care",action="support")
+        return Decision("support","danger")
     local=runtime.local_propose(state,event,memory,history,learning,catalog)
     action,data=local
     # Explicit language and low-quality input need no model to be safe/reliable.
@@ -115,6 +123,7 @@ def plan(state,event,memory,history,learning,catalog):
         options=[(local,preview(state,event,catalog,local))]
     a=state["active"]
     context={"language_preference":language.preference(state),"recent_turns":list(history),
+        "learner":care.learner(state),"care_kind":state.get("care_kind"),"activity_held_for_care":bool(state.get("care_hold")),
         "conversation_summary":state.get("conversation_summary",{}),"session_notes":state.get("session_notes",[]),
         "delivery_context":state["reply"],"confirmed_preferences":list(memory),"learning_observations":list(learning),
         "last_activity":state["recent"],"activity":a["lesson"]["title"] if a else None,

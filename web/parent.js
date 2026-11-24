@@ -31,8 +31,10 @@ async function parentRefresh(){
     const b=button((p.id===profile?"当前 · ":"")+p.name,async()=>{await switchProfile(p.id);await parentRefresh();});
     profileRow.append(b);
   }
-  $("engine").textContent=(home.model?"已配置对话模型":"本机规则模式")+"。本机保存进度与学习观察。语音输入使用浏览器的识别服务。";
+  $("engine").textContent=(home.model?"已配置对话模型":"本机规则模式")+"。保存进度、已确认偏好和对话摘要。Cascade 语音发送至 OpenAI；不保存录音。";
   const data=profile?await api("/api/parent",{profile,op:"summary"}):{observations:[],memories:[]};
+  $("nativeLevel").value=data.learner?.native_level||"unknown";
+  $("summaryView").textContent=JSON.stringify(data.conversation_summary||{},null,2);
   $("observations").replaceChildren(...data.observations.map(r=>node("div",r.goal+" · "+(kinds[r.kind]||r.kind)+" × "+r.n)));
   if(!data.observations.length)$("observations").textContent="还没有学习观察。";
   $("memories").replaceChildren();
@@ -45,6 +47,8 @@ async function syncParent(){await parentRefresh();}
 function parentAction(fn){return async e=>{e?.preventDefault();try{$("parentStatus").textContent="";await fn();}catch(error){$("parentStatus").textContent=error.message;}};}
 $("newProfile").onsubmit=parentAction(async()=>{const field=$("newProfile").querySelector("input");const r=await api("/api/profile",{name:field.value.trim()});await switchProfile(r.id);field.value="";await parentRefresh();});
 $("memoryForm").onsubmit=parentAction(async()=>{await ensureProfile();const field=$("memoryForm").querySelector("input");await api("/api/parent",{profile,op:"remember",value:field.value.trim()});field.value="";await syncParent();});
+$("learnerForm").onsubmit=parentAction(async()=>{await ensureProfile();await api("/api/parent",{profile,op:"learner",value:{native_language:"en",target_language:"zh",native_level:$("nativeLevel").value}});status("语言档案已保存，下轮对话生效。");});
+$("forgetContext").onclick=parentAction(async()=>{if(profile){await api("/api/parent",{profile,op:"forget_context"});await syncParent();}});
 $("deleteProfile").onclick=parentAction(async()=>{if(!window.confirm("删除这个档案及其进度、偏好和学习记录？"))return;
   await api("/api/parent",{profile,op:"delete"});profile=null;localStorage.removeItem("sparky.profile");await parentRefresh();});
 (async()=>{home=await api("/api/home");if(home.pin)pin=prompt("请输入家长 PIN")||"";await parentRefresh();})().catch(e=>status(e.message));

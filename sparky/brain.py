@@ -52,8 +52,10 @@ def propose(text, context):
     if not result:
         return None
     intent=result.get("intent")
-    if not isinstance(intent,str) or intent not in {"choose","help","meaning","refuse","pause","finish","clarify","language","chat","start","change_activity","resume","return_story"}:
+    if not isinstance(intent,str) or intent not in {"choose","help","meaning","refuse","pause","finish","clarify","language","chat","start","change_activity","resume","return_story","support"}:
         diagnostics.note("validation",status="invalid_intent")
+        return None
+    if intent=="support" and result.get("kind") not in {"danger","distress","disclosure"}:
         return None
     if intent=="language" and result.get("preference") not in ("english","chinese","bilingual"):
         diagnostics.note("validation",status="invalid_preference")

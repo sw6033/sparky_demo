@@ -173,9 +173,10 @@ class Handler(BaseHTTPRequestHandler):
         if path=="/api/parent":
             self.parent_check()
             op=b.get("op","summary")
-            if op not in ("summary","delete","remember","forget"):
+            if op not in ("summary","delete","remember","forget","forget_context","learner"):
                 raise ValueError("未知操作。")
-            return self.respond(200,store.parent(family,pid,op,string(b,"value",80) if op in ("remember","forget") else ""))
+            value=b.get("value") if op=="learner" else string(b,"value",80) if op in ("remember","forget") else ""
+            return self.respond(200,store.parent(family,pid,op,value))
         raise Missing()
 
     def handle_request(self):

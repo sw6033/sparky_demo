@@ -48,7 +48,10 @@ def request_json(system, data, purpose="decision"):
     return None
 
 def propose(text, context):
-    result=request_json(SYSTEM_PROMPT,{"context":context,"utterance":text})
+    prompt=SYSTEM_PROMPT
+    if context.get("learner",{}).get("native_level")=="early" and context.get("language_preference")!="english":
+        prompt+="\n\nCurrent child's teaching mode: IMMERSION. Their English explanation skills are still developing. For a request to learn a Chinese word or phrase, give one tiny concrete Mandarin example, perhaps a playful sound or action. Example approach: for a ball, ‘小球，滚呀滚。’ Do not define the word in English, spell pinyin, or ask the child to repeat. The example should itself answer the learning request. Ordinary sharing can remain conversation. A current explicit request for English and safety needs take priority. Apply this to the actual reply, not merely the chosen action."
+    result=request_json(prompt,{"context":context,"utterance":text})
     if not result:
         return None
     intent=result.get("intent")

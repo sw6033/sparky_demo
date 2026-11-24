@@ -17,8 +17,11 @@ class ModelFixture(BaseHTTPRequestHandler):
     def do_POST(self):
         payload=json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         data=json.loads(payload["messages"][-1]["content"])
-        self.server.last=data
-        proposal={"intent":"choose","item":"dog" if data["utterance"]=="会汪汪叫的那只" else "dragon"}
+        if "utterance" in data:
+            self.server.last=data
+            proposal={"intent":"choose","item":"dog" if data["utterance"]=="会汪汪叫的那只" else "dragon"}
+        else:
+            proposal={"topic":"Fixture summary","facts":[],"open_threads":[]}
         body=json.dumps({"choices":[{"message":{"content":json.dumps(proposal)}}]}).encode()
         self.send_response(200)
         self.send_header("Content-Length",str(len(body)))

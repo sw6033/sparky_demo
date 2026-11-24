@@ -16,6 +16,8 @@ def checks(state,expect):
     paused=state["paused"] or {}
     values={"lesson":active.get("lesson"),"mode":active.get("mode"),"paused":paused.get("lesson"),
             "idle":not active and not paused,"language":state["language_preference"],
+            "care":state.get("care_kind"),"care_hold":bool(state.get("care_hold")),
+            "chinese_present":bool(re.search(r"[\u3400-\u9fff]",state["reply"]["text"])),
             "english_only":not bool(re.search(r"[\u3400-\u9fff]",state["reply"]["text"]))}
     return {key:(expected in state["reply"]["text"] if key=="contains" else values[key]==expected) for key,expected in expect.items()}
 
@@ -41,6 +43,7 @@ def main():
         try:
             for case in cases:
                 pid=store.create("evaluation",case["name"])
+                if case.get("learner"):store.parent("evaluation",pid,"learner",case["learner"])
                 for turn in case["turns"]:
                     started=time.monotonic()
                     event={"id":uuid.uuid4().hex,"revision":store.state("evaluation",pid)["revision"],"type":"utterance","text":turn["text"]}

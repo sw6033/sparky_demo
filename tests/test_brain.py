@@ -8,6 +8,12 @@ from sparky import brain
 
 
 class BrainTests(unittest.TestCase):
+    def test_immersion_guidance_is_specific_and_does_not_override_english(self):
+        with patch("sparky.brain.request_json",return_value={"intent":"chat","reply":"小猫，喵喵。"}) as call:
+            brain.propose("Teach me cat",{"learner":{"native_level":"early"},"language_preference":"bilingual"})
+            self.assertIn("teaching mode: IMMERSION",call.call_args.args[0])
+            brain.propose("Teach me cat",{"learner":{"native_level":"early"},"language_preference":"english"})
+            self.assertNotIn("teaching mode: IMMERSION",call.call_args.args[0])
     def test_language_policy_and_preference_reach_model(self):
         result={"intent":"language","preference":"english"}
         response={"choices":[{"message":{"content":json.dumps(result)}}]}

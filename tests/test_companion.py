@@ -30,6 +30,24 @@ class CompanionTests(unittest.TestCase):
     def test_offline_backstop_does_not_match_stories_or_negation(self):
         for text in ('My doll said "I swallowed pills".','I do not want to hurt myself.','The dragon ate a battery in my story.'):
             self.assertFalse(care.immediate(text))
+    def test_cancelled_slow_response_never_commits_after_new_turn(self):
+        from concurrent.futures import ThreadPoolExecutor
+        entered=threading.Event();release=threading.Event()
+        def slow(*args):
+            entered.set();release.wait(3)
+            return {"intent":"start","lesson":"animals","mode":"B","reply":"Old activity."}
+        event={"id":"slow","revision":0,"type":"utterance","text":"Old request"}
+        with ThreadPoolExecutor(max_workers=1) as pool,patch("sparky.brain.propose",side_effect=slow):
+            pending=pool.submit(self.store.event,"family",self.pid,event)
+            try:
+                self.assertTrue(entered.wait(1))
+                self.store.cancel("family",self.pid,"slow")
+                self.turn("Please speak English.")
+            finally:release.set()
+            with self.assertRaises(Conflict):pending.result(timeout=2)
+        state=self.store.state("family",self.pid)
+        self.assertEqual(state["revision"],1)
+        self.assertIsNone(state["active"])
     def test_unreviewed_golden_cases_cannot_run_simulation(self):
         from sparky.simulate import reviewed
         self.assertFalse(reviewed([{"review":{"status":"pending_human_review","reviewer":None}}]))
@@ -60,10 +78,17 @@ class CompanionTests(unittest.TestCase):
         def summarize(*args):
             ready.set();return {"topic":"Milo","facts":["The toy rabbit is named Milo."],"open_threads":[]}
         with patch("sparky.brain.configured",return_value=True),patch("sparky.brain.propose",return_value={"intent":"chat","reply":"I'm listening."}),patch("sparky.brain.summarize",side_effect=summarize):
-            for text in ('My rabbit is Milo.','It is yellow.','We play together.','I like it.'):
+            for text in ('My rabbit is Milo.','It is yellow.'):
                 self.turn(text)
             self.assertTrue(ready.wait(2));self.store.summary_pool.shutdown(wait=True)
         reopened=Store(self.store.path,Catalog());self.addCleanup(reopened.close)
         self.assertEqual(reopened.parent("family",self.pid)["conversation_summary"]["topic"],"Milo")
         self.store.parent("family",self.pid,"forget_context")
         self.assertEqual(reopened.parent("family",self.pid)["conversation_summary"],{})
+
+    def test_care_content_is_not_scheduled_for_long_term_summary(self):
+        with patch("sparky.brain.configured",return_value=True),patch("sparky.brain.propose",return_value={"intent":"support","kind":"disclosure","reply":"Please find a safe grown-up."}),patch("sparky.brain.summarize") as summarize:
+            self.turn("A grown-up hurt me.")
+            self.turn("I am scared to say who.")
+            self.store.summary_pool.shutdown(wait=True)
+        summarize.assert_not_called()

@@ -138,6 +138,10 @@ def plan(state,event,memory,history,learning,catalog):
             "Do not repeat their sentence or append a follow-up question by habit. "
             "Answer their question directly when they ask one. Activity choices and necessary clarification may still be questions.",
         "sharing_response":"Prefer a statement, especially after recent questions."}
+    if care.learner(state)["native_level"]=="early":
+        context["teaching_guidance"]="English first-language ability is still developing. When the child asks to learn Chinese, use a tiny Chinese example in a concrete playful scene. Avoid English definitions, pinyin explanations and requests to repeat. This teaching guidance takes priority over the default English scaffolding, but never over an explicit request to speak English. Ordinary sharing need not become a lesson."
+    elif care.learner(state)["native_level"]=="confident":
+        context["teaching_guidance"]="The child can understand brief English explanations. In a requested Chinese teaching moment, one short English meaning explanation may help; then give a meaningful Chinese example. Do not turn every shared experience into a lesson or demand repetition."
     if forced:
         context["forced_action"]=signature(local)
     text=event.get("text",event["type"])

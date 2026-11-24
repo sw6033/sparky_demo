@@ -41,6 +41,7 @@ class Store:
               CREATE TABLE IF NOT EXISTS memories(profile TEXT REFERENCES profiles ON DELETE CASCADE, id TEXT, value TEXT NOT NULL, PRIMARY KEY(profile,id));
               CREATE TABLE IF NOT EXISTS traces(profile TEXT REFERENCES profiles ON DELETE CASCADE, turn TEXT, created REAL, data TEXT NOT NULL, PRIMARY KEY(profile,turn));
               CREATE TABLE IF NOT EXISTS summaries(profile TEXT PRIMARY KEY REFERENCES profiles ON DELETE CASCADE, epoch INTEGER, revision INTEGER, data TEXT NOT NULL);
+              CREATE TABLE IF NOT EXISTS cancellations(profile TEXT REFERENCES profiles ON DELETE CASCADE, turn TEXT, created REAL, PRIMARY KEY(profile,turn));
             """)
     @contextmanager
     def db(self):
@@ -85,6 +86,8 @@ class Store:
         digest=hashlib.sha256(dump(event).encode()).hexdigest()
         def check(db):
             state=self.load(db,family,pid)
+            if db.execute("SELECT 1 FROM cancellations WHERE profile=? AND turn=?",(pid,event["id"])).fetchone():
+                raise Conflict("本轮已取消。")
             old=db.execute("SELECT digest FROM events WHERE profile=? AND id=?",(pid,event["id"])).fetchone()
             if old and old[0]!=digest:
                 raise Conflict("事件编号已用于其他输入。")
@@ -139,9 +142,17 @@ class Store:
                     current=self.history.get(pid,(now,[]))[1]
                     self.history[pid]=(time.monotonic(),(current+[{"revision":state["revision"],"user":event["text"],
                         "reply":state["reply"]["text"],"reply_id":state["reply"]["id"],
+                        "care":bool(state.get("care_kind")),
                         "delivery":"pending","segments":deepcopy(state["reply"]["segments"])}])[-32:])
         self.schedule_summary(family,pid,state)
         return runtime.public(state),False
+
+    def cancel(self,family,pid,turn):
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self.load(db,family,pid)
+            db.execute("INSERT OR REPLACE INTO cancellations VALUES(?,?,?)",(pid,turn,time.time()))
+            db.execute("DELETE FROM cancellations WHERE profile=? AND turn NOT IN (SELECT turn FROM cancellations WHERE profile=? ORDER BY created DESC LIMIT 128)",(pid,pid))
 
     def delivery(self,family,pid,reply,status,attempt,segment=None):
         with self.db() as db:
@@ -247,13 +258,13 @@ class Store:
                 "transcripts":os.getenv("SPARKY_DEBUG_TRANSCRIPTS")=="1","prompt":brain.SYSTEM_PROMPT}
 
     def schedule_summary(self,family,pid,state):
-        if not brain.configured() or self.closed:
+        if not brain.configured() or self.closed or state.get("care_kind"):
             return
         with self.history_lock:
             history=deepcopy(self.history.get(pid,(0,[]))[1])
         # Checkpoint short conversations too, without putting summarization on
         # the speaking path. Recent turns remain available until summary commits.
-        older=[t for t in history[:-2] if t["revision"]>state.get("summary_revision",0)]
+        older=[t for t in history if t["revision"]>state.get("summary_revision",0) and not t.get("care")]
         if len(older)<2:
             return
         job=(family,state.get("context_epoch",0),state.get("summary_revision",0),older,state.get("session_notes",[]))

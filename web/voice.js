@@ -56,6 +56,7 @@ class PcmStreamPlayer {
     this.replyId = null;
     this.startedSegments = new Set();
     this.segmentLastSource = new Map();
+    this.streamDoneSegments = new Set();
     this.finishedSegments = new Set();
     this.raf = null;
   }
@@ -80,6 +81,7 @@ class PcmStreamPlayer {
     this.replyId = replyId;
     this.startedSegments.clear();
     this.segmentLastSource.clear();
+    this.streamDoneSegments.clear();
     this.finishedSegments.clear();
   }
 
@@ -134,7 +136,7 @@ class PcmStreamPlayer {
 
     src.onended = () => {
       this.sources.delete(src);
-      if (this.segmentLastSource.get(segment) === src && this.finishedSegments.has(`done_${segment}`)) {
+      if (this.segmentLastSource.get(segment) === src && this.streamDoneSegments.has(segment)) {
         this.finishedSegments.add(segment);
         if (this.replyId) this.onSegmentReceipt(this.replyId, segment, "complete");
       }
@@ -148,7 +150,7 @@ class PcmStreamPlayer {
   }
 
   markSegmentStreamDone(segment) {
-    this.finishedSegments.add(`done_${segment}`);
+    this.streamDoneSegments.add(segment);
     const lastSrc = this.segmentLastSource.get(segment);
     if (!lastSrc || !this.sources.has(lastSrc)) {
       this.finishedSegments.add(segment);

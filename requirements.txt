@@ -1,1 +1,2 @@
-websocket-client>=1.8,<2
+# Sparky POC v2 uses only the Python 3.10+ standard library (including built-in TLS WebSocket).
+# Optional: install websocket-client>=1.8,<2 if preferred over the built-in RFC-6455 client.

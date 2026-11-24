@@ -6,6 +6,8 @@
 - **语音与模型链路**：重构版 **OpenAI 全流式低延迟 Cascade**（`gpt-transcribe` 双语热词识别 → `gpt-4.1` 两段式流式生成 → `gpt-realtime-2.1-mini` / PCM 边收边播 WebAudio 管道），无外部第三方 Python 依赖即可运行。
 - **验证闭环**：内置侧边 **POC 观测与大纲控制台**，支持实时透视 `SessionFocus` 教学切片、可配置大纲热重载，以及一键 **「模拟开启下一场对话（Next Session）」** 验证跨会话长期记忆与熟词滚雪球复现。
 
+完整产品取舍、可配置大纲数据结构与运行时架构说明请参见 **[DESIGN_V2.md](./DESIGN_V2.md)**。
+
 ---
 
 ## 快速启动

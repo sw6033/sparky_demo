@@ -1,8 +1,8 @@
 "use strict";
 
 class CascadeVoice {
-  constructor({transcribe, turn, speech, delivery, status, changed, heard, metrics=()=>{}, cancel=()=>{}, continuous=false, silenceMs=1500}) {
-    Object.assign(this, {transcribe, turn, speech, delivery, status, changed, heard, metrics, cancel, continuous, silenceMs});
+  constructor({transcribe, turn, speech, pipeline, delivery, status, changed, heard, metrics=()=>{}, cancel=()=>{}, continuous=false, silenceMs=1500}) {
+    Object.assign(this, {transcribe, turn, speech, pipeline, delivery, status, changed, heard, metrics, cancel, continuous, silenceMs});
     this.epoch = 0;
     this.audio = new Audio();
     this.recording = false;
@@ -82,6 +82,7 @@ class CascadeVoice {
           let binary = "";
           for (let offset=0; offset<bytes.length; offset+=8192) binary += String.fromCharCode(...bytes.subarray(offset,offset+8192));
           if (!this.current(token)) return;
+          if(this.pipeline){await this.runPipeline({audio:btoa(binary),media},token);return;}
           const result = await this.transcribe(btoa(binary), media, this.controller.signal, this.turnId);
           if (!this.current(token)) return;
           if (!result.text.trim()) { this.stop("没有听清，请重新开启麦克风或打字。"); return; }
@@ -137,7 +138,7 @@ class CascadeVoice {
     this.timing={};
     const token = this.epoch;
     this.controller = new AbortController();
-    try { await this.run(text, "text", token); }
+    try { if(this.pipeline)await this.runPipeline({text},token);else await this.run(text, "text", token); }
     catch (error) { this.fail(error, token); }
   }
 
@@ -153,12 +154,48 @@ class CascadeVoice {
     if(this.current(token))this.processing=false;
   }
 
-  async play(reply, token) {
+  async runPipeline(input,token){
+    if(this.cancelPending)await this.cancelPending;
+    if(!this.current(token))return;
+    this.processing=true;
+    const started=Date.now();
+    let next;
+    this.status(input.audio?"正在识别你说的话…":"Sparky 正在想…");
+    const result=await this.pipeline(input,this.controller.signal,this.turnId,event=>{
+      if(!this.current(token))return;
+      if(event.type==="transcript"){
+        this.heard(event.text);this.timing.pipeline_transcript_ms=Date.now()-started;
+        this.status("Sparky 正在想…");
+      }
+      if(event.type==="state"){
+        this.timing.pipeline_state_ms=Date.now()-started;
+        this.status("正在准备声音…");
+        const reply=event.state.reply;
+        // Prepare the next sentence while the server is still making the first.
+        if(reply.speech_mode!=="whole" && reply.segments?.length>1){
+          next=Promise.resolve().then(()=>this.current(token)?this.speech(reply.id,this.controller.signal,reply.segments[1].index,this.turnId):null)
+            .then(blob=>({blob}),error=>({error}));
+        }
+      }
+      if(event.type==="audio")this.timing.pipeline_audio_ms=Date.now()-started;
+      if(event.type==="queue")this.timing.client_queue_ms=event.ms;
+    },()=>this.current(token));
+    if(!this.current(token))return;
+    if(result.stopped){this.processing=false;this.stop(result.stopped);return;}
+    this.timing.pipeline_request_ms=Date.now()-started;
+    await this.play(result.state.reply,token,result.audio,next);
+    if(this.current(token))this.processing=false;
+  }
+
+  async play(reply, token, firstAudio, nextAudio) {
     this.status("正在准备声音…");
     this.parts=reply.speech_mode==="whole" ? [{text:reply.text}] :
       reply.segments?.length ? reply.segments : [{text:reply.text}];
     this.reply=reply;
     this.prefetched=new Map();
+    this.lastPartEnded=null;
+    if(firstAudio)this.prefetched.set(0,Promise.resolve({blob:firstAudio}));
+    if(nextAudio)this.prefetched.set(1,nextAudio);
     await this.playPart(0,token);
   }
 
@@ -182,13 +219,17 @@ class CascadeVoice {
       throw prepared.error;
     }
     if(index+1<this.parts.length)this.prepare(index+1,token);
+    if(index+2<this.parts.length)this.prepare(index+2,token);
     if(this.url)URL.revokeObjectURL(this.url);
     this.url=URL.createObjectURL(prepared.blob);
     const playback=this.playback={id:this.reply.id,segment:this.parts[index].index,attempt:crypto.randomUUID(),started:false};
+    const playRequestedAt=Date.now();
     this.audio.src=this.url;
     this.audio.onplaying=()=>{
       if(!this.current(token)||this.playback!==playback||playback.started)return;
       playback.started=true;
+      this.timing.audio_start_ms=(this.timing.audio_start_ms||0)+Date.now()-playRequestedAt;
+      if(this.lastPartEnded!==null)this.timing.sentence_gap_ms=(this.timing.sentence_gap_ms||0)+Date.now()-this.lastPartEnded;
       this.delivery(playback,"started");
       if(index===0){
         this.timing.first_audio_ms=Date.now()-this.turnAt;
@@ -199,6 +240,7 @@ class CascadeVoice {
     this.audio.onended=()=>{
       if(!this.current(token)||this.playback!==playback)return;
       if(playback.started)this.delivery(playback,"complete");
+      this.lastPartEnded=Date.now();
       this.playback=null;
       if(index+1<this.parts.length){
         this.playPart(index+1,token).catch(error=>this.fail(error,token));

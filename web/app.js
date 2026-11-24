@@ -8,6 +8,7 @@ let liveCall, creatingProfile, turnQueue = Promise.resolve();
 let resumeLive = false;
 let cascade;
 let resyncAfterCancel=false;
+const cascadeReceipts=[];
 const status = message => { $("status").textContent = message; };
 
 async function api(path, body, signal) {
@@ -91,6 +92,10 @@ async function startLive() {
 }
 function receipt(p, phase) {
   if (!p.id || !p.profile) return;
+  if(cascade){
+    cascadeReceipts.push({profile:p.profile,reply:p.id,attempt:p.attempt,status:phase,segment:p.segment});
+    if(cascadeReceipts.length>128)cascadeReceipts.splice(0,cascadeReceipts.length-128);
+  }
   pendingReceipt = pendingReceipt.then(() => api("/api/delivery", {
     profile:p.profile, reply:p.id, attempt:p.attempt, status:phase, segment:p.segment
   })).catch(()=>{});
@@ -219,10 +224,30 @@ window.addEventListener("pagehide",suspend);
       await ensureProfile();
       const response=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({profile,...data}),signal});
-      if (!response.ok) throw new Error((await response.json()).error || "语音请求失败。");
+      if (!response.ok) throw Object.assign(new Error((await response.json()).error || "语音请求失败。"),{code:response.status});
       return response;
     }
+    function cascadeTurn(input,signal,turn,onRecord,isCurrent){
+      const queuedAt=Date.now();
+      const next=turnQueue.then(async()=>{
+        await ensureProfile();
+        if(!isCurrent())throw new DOMException("本轮已取消。","AbortError");
+        if(resyncAfterCancel){state=await api("/api/state/"+profile,undefined,signal);resyncAfterCancel=false;}
+        onRecord({type:"queue",ms:Date.now()-queuedAt});
+        const receipts=cascadeReceipts.filter(r=>r.profile===profile && r.reply===state.reply.id).map(({profile,...r})=>r);
+        try{
+          const response=await speechRequest("/api/cascade",{...input,turn,revision:state.revision,receipts},signal);
+          return await readCascade(response,event=>{
+            if(!isCurrent())throw new DOMException("本轮已取消。","AbortError");
+            if(event.type==="state"){state=event.state;render();}
+            onRecord(event);
+          });
+        }catch(error){if(error.code===409)resyncAfterCancel=true;throw error;}
+      });
+      turnQueue=next.catch(()=>{});return next;
+    }
     cascade=new CascadeVoice({
+      pipeline:cascadeTurn,
       transcribe:async(audio,media,signal,turn)=>(await speechRequest("/api/transcribe",{audio,media,turn},signal)).json(),
       speech:async(reply,signal,segment,turn)=>(await speechRequest("/api/speech",{reply,segment,turn},signal)).blob(),
       turn:(text,source,isCurrent,turn,signal)=>courseTurn(text,source,undefined,turn,isCurrent,signal),

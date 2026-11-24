@@ -29,5 +29,5 @@ def attach(reply):
     # Keep sentence receipts; a whole-clip interruption conservatively marks all
     # sentences interrupted because we have no verified word-level playhead.
     cost=sum(3 if '\u3400'<=char<='\u9fff' else 1 for char in reply["text"])
-    reply["speech_mode"]="whole" if len(reply["segments"])<=2 and cost<=160 else "sentences"
+    reply["speech_mode"]="whole" if cost<=160 else "sentences"
     return reply

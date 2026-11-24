@@ -217,3 +217,35 @@ test("short utterance gets hesitation time and silence uses the selected thresho
   assert.equal(voice.timing.endpoint_wait_ms,2100);
   voice.stop();
 });
+
+test("combined recording uses returned audio without legacy ASR, turn or first TTS roundtrips",async()=>{
+  const inputs=[];
+  const {voice,calls,receipts}=fixture({
+    transcribe:()=>assert.fail("legacy ASR called"),speech:()=>assert.fail("duplicate TTS called"),
+    pipeline:async(input,signal,turn,onRecord)=>{
+      inputs.push(input);
+      const state={reply:{id:"combined",text:"One. Two. Three.",speech_mode:"whole"}};
+      onRecord({type:"transcript",text:"Hello"});onRecord({type:"state",state});onRecord({type:"audio"});
+      return {state,audio:new Blob(["whole"])};
+    }
+  });
+  await voice.start();voice.finish();await voice.recorder.done;
+  assert.equal(inputs.length,1);assert.equal(atob(inputs[0].audio),"audio bytes");
+  assert.equal(calls.length,0);assert.deepEqual(receipts,[{id:"combined",phase:"started"}]);
+  voice.audio.onended();assert.equal(receipts.at(-1).phase,"complete");
+});
+
+test("long reply prefetch starts before first audio arrives and cancellation prevents late playback",async()=>{
+  let finish;const requested=[];
+  const {voice,receipts}=fixture({
+    pipeline:async(input,signal,turn,onRecord)=>{
+      const state={reply:{id:"r",speech_mode:"sentences",segments:[{index:0,text:"One."},{index:1,text:"Two."}]}};
+      onRecord({type:"state",state});await new Promise(resolve=>{finish=resolve;});
+      return {state,audio:new Blob(["late first"])};
+    },
+    speech:async(id,signal,index)=>{requested.push(index);return new Blob(["second"]);}
+  });
+  const pending=voice.text("Hi");await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(requested,[1]);assert.equal(receipts.length,0);
+  voice.stop();finish();await pending;assert.equal(receipts.length,0);
+});

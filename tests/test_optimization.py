@@ -112,7 +112,7 @@ class OptimizationTests(unittest.TestCase):
     def test_audio_policy_batches_short_replies_but_keeps_long_sentences(self):
         short='Let us draw a little animal together. Would you like to draw a cat or a dog?'
         self.assertEqual(segments.attach({"text":short})["speech_mode"],"whole")
-        self.assertEqual(segments.attach({"text":"One. Two. Three."})["speech_mode"],"sentences")
+        self.assertEqual(segments.attach({"text":"One. Two. Three."})["speech_mode"],"whole")
         self.assertEqual(segments.attach({"text":"你好"*30+"。"})["speech_mode"],"sentences")
 
     def test_delivery_and_notes_are_in_next_model_context(self):

@@ -154,6 +154,15 @@ class Store:
             db.execute("INSERT OR REPLACE INTO cancellations VALUES(?,?,?)",(pid,turn,time.time()))
             db.execute("DELETE FROM cancellations WHERE profile=? AND turn NOT IN (SELECT turn FROM cancellations WHERE profile=? ORDER BY created DESC LIMIT 128)",(pid,pid))
 
+    def current_turn(self,family,pid,turn,reply=None):
+        with self.db() as db:
+            state=self.load(db,family,pid)
+            if db.execute("SELECT 1 FROM cancellations WHERE profile=? AND turn=?",(pid,turn)).fetchone():
+                raise Conflict("本轮已取消。")
+            if reply is not None and state["reply"]["id"]!=reply:
+                raise Conflict("回复已过期。")
+            return runtime.public(state)
+
     def delivery(self,family,pid,reply,status,attempt,segment=None):
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -170,6 +179,9 @@ class Store:
                 if target["delivery"]=="complete":
                     return
             if status=="started":
+                # A piggybacked receipt and its background request may arrive twice.
+                if target.get("attempt")==attempt:
+                    return
                 target["attempt"]=attempt
             elif status=="failed" and target["delivery"]=="pending":
                 target["attempt"]=attempt

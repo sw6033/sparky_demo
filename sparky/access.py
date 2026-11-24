@@ -46,7 +46,7 @@ class Gate:
             if path=="/" and handler.command=="GET":handler.respond(200,LOGIN,"text/html; charset=utf-8")
             else:handler.respond(401,{"error":"请先回到首页输入试用口令。"})
             return False
-        if handler.command=="POST" and path in {"/api/event","/api/transcribe","/api/speech"}:
+        if handler.command=="POST" and path in {"/api/event","/api/transcribe","/api/speech","/api/cascade"}:
             if self.limited("minute",60,60) or self.limited("hour",600,3600):
                 handler.respond(429,{"error":"试用请求较多，请稍后再试。"});return False
         return True

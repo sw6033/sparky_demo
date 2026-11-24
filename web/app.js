@@ -18,7 +18,7 @@ async function api(path, body) {
 }
 function render() {
   $("title").textContent = state?.active?.title || (state?.paused ? "接着上次聊" : "今天想聊什么？");
-  $("reply").textContent = state?.revision ? state.reply.text : "嗨，我是 Sparky！你今天想做什么呀？";
+  $("reply").textContent = state?.reply?.text || "Hi, I'm Sparky! What would you like to do today?";
 }
 async function ensureProfile() {
   if (profile) return;
@@ -88,7 +88,7 @@ async function startLive() {
 function receipt(p, phase) {
   if (!p.id || !p.profile) return;
   pendingReceipt = pendingReceipt.then(() => api("/api/delivery", {
-    profile:p.profile, reply:p.id, attempt:p.attempt, status:phase
+    profile:p.profile, reply:p.id, attempt:p.attempt, status:phase, segment:p.segment
   })).catch(()=>{});
 }
 function stopListening() {
@@ -219,14 +219,17 @@ window.addEventListener("pagehide",suspend);
       return response;
     }
     cascade=new CascadeVoice({
-      transcribe:async(audio,media,signal)=>(await speechRequest("/api/transcribe",{audio,media},signal)).json(),
-      speech:async(reply,signal)=>(await speechRequest("/api/speech",{reply},signal)).blob(),
-      turn:(text,source,isCurrent)=>courseTurn(text,source,undefined,crypto.randomUUID(),isCurrent),
+      transcribe:async(audio,media,signal,turn)=>(await speechRequest("/api/transcribe",{audio,media,turn},signal)).json(),
+      speech:async(reply,signal,segment,turn)=>(await speechRequest("/api/speech",{reply,segment,turn},signal)).blob(),
+      turn:(text,source,isCurrent,turn)=>courseTurn(text,source,undefined,turn,isCurrent),
+      metrics:(turn,metrics)=>api("/api/metrics",{profile,turn,metrics}).catch(()=>{}),
       delivery:(playback,phase)=>receipt({...playback,profile},phase),
       status, heard:text=>{$("heard").textContent="你说「"+text+"」";},
       changed:recording=>{$("record").textContent=recording?"说完了":"开始说话";}
     });
     $("cascadeControls").hidden=false;
+    $("continuous").onchange=()=>{cascade.continuous=$("continuous").checked;};
+    $("pauseLength").onchange=()=>{cascade.silenceMs=Number($("pauseLength").value);};
     $("record").onclick=()=>cascade.recording?cascade.finish():cascade.start();
     $("interrupt").onclick=()=>cascade.start();
     $("stopVoice").onclick=()=>cascade.stop();

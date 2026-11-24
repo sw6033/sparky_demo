@@ -1,6 +1,6 @@
 {
   "id": "color",
-  "version": 3,
+  "version": 4,
   "title": "一起画彩虹",
   "icon": "🎨",
   "activities": {
@@ -78,5 +78,9 @@
     "画彩虹",
     "画一条彩虹",
     "画个彩虹"
-  ]
+  ],
+  "capabilities": {
+    "A": "Practice short Chinese phrases describing colors: red and blue.",
+    "B": "Draw or paint together through a pretend rainbow/color activity: choose red or blue, then talk about the picture. Supports requests to draw, paint or make art now; no digital drawing canvas."
+  }
 }

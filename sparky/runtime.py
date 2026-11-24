@@ -1,6 +1,6 @@
 """One companion, two activity modes. Activity decisions consume lesson data only."""
 import uuid
-from . import brain, language
+from . import language, segments
 from .content import compile_answers, norm
 
 def uid():
@@ -8,10 +8,10 @@ def uid():
 
 def initial():
     return {"revision":0,"active":None,"paused":None,"recent":None,"language_preference":"bilingual",
-            "reply":{"id":uid(),"text":"Hi, I'm Sparky! What would you like to do today?","delivery":"pending"}}
+            "reply":segments.attach({"id":uid(),"text":"Hi, I'm Sparky! What would you like to do today?","delivery":"pending"})}
 
 def say(state,text):
-    state["reply"]={"id":uid(),"text":text,"delivery":"pending"}
+    state["reply"]=segments.attach({"id":uid(),"text":text,"delivery":"pending"})
 
 def step(a):
     return a["lesson"]["rules"][a["mode"]]["steps"][a["index"]]
@@ -74,7 +74,7 @@ def lesson_request(value, catalog):
                 return {"lesson": lesson["id"], "mode": mode}
     return None
 
-def propose(state,event,memory=(),history=(),learning=(),catalog=None):
+def local_propose(state,event,memory=(),history=(),learning=(),catalog=None):
     """Explicit controls and exact curricular answers work without network access."""
     if event["type"]!="utterance":
         return event["type"],None
@@ -131,24 +131,6 @@ def propose(state,event,memory=(),history=(),learning=(),catalog=None):
         if "什么意思" in text or "what does" in text.lower():
             return "meaning",None
     cue = catalog.conversation_entry(text) if catalog and not state["paused"] else None
-    context={"language_preference":language.preference(state),"recent_turns":list(history),"learning_observations":list(learning),"confirmed_preferences":list(memory),"last_activity":state["recent"],"activity":a["lesson"]["title"] if a else None,"question":prompt(a,state) if a else None,
-             "options":[{"id":x["id"],"zh":x["zh"],"en":x["en"]} for x in candidates(a)] if a else []}
-    if cue:
-        # An example is optional context, not a mandatory Chinese reply.
-        context["conversation_example"]={"word":cue["word"],"example":cue["offer"]}
-    proposal=brain.propose(text,context)
-    if proposal:
-        intent=proposal["intent"]
-        if intent=="language" and proposal.get("preference") in language.PREFERENCES:
-            return "language",proposal["preference"]
-        if intent=="choose" and a:
-            item=next((x for x in candidates(a) if x["id"]==proposal.get("item")),None)
-            if item:
-                return "answer",(item,"interpreted")
-        if intent in {"help","meaning","refuse","pause","finish","clarify"}:
-            return intent,None
-        if intent=="chat" and isinstance(proposal.get("reply"),str) and proposal["reply"].strip():
-            return "chat",proposal["reply"].strip()[:200]
     if cue and language.preference(state)=="chinese":
         if any(p in text.lower().replace("’","'") for p in ("don't like","do not like","不喜欢")):
             return "chat","哦，你不喜欢。那你喜欢什么呀？"
@@ -354,5 +336,12 @@ def conversation_copy(text):
             .replace("想选的时候点一下就好。","想好了再告诉我。")
             .replace("可以点一下来选","可以告诉我你的选择")
             .replace("也可以选下面的活动","也可以告诉我想玩什么"))
+
+
+
+
+def propose(state,event,memory=(),history=(),learning=(),catalog=None):
+    from .planning import plan
+    return plan(state,event,memory,history,learning,catalog)
 
 

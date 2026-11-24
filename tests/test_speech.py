@@ -59,13 +59,15 @@ class SpeechTests(unittest.TestCase):
         sent = [json.loads(call.args[0]) for call in connection.send.call_args_list]
         self.assertEqual(sent[0]["session"]["tools"], [])
         self.assertEqual(sent[1]["response"]["conversation"], "none")
-        self.assertEqual(sent[1]["response"]["input"], [])
-        self.assertIn("你想选蓝色吗", sent[1]["response"]["instructions"])
+        script=sent[1]["response"]["input"][0]
+        self.assertEqual(script["role"],"user")
+        self.assertEqual(json.loads(script["content"][0]["text"]),{"script":"你想选蓝色吗？"})
+        self.assertNotIn("你想选蓝色吗", sent[1]["response"]["instructions"])
         self.assertIn(speech.TTS_MODEL, module.create_connection.call_args.args[0])
         connection.close.assert_called_once()
 
     def test_tts_rejects_rewritten_or_missing_transcript(self):
-        for spoken in ("你已经学会了！", ""):
+        for spoken in ("你已经学会了！", "", "好的，我来读一下。你想选蓝色吗？"):
             connection, module = self.synthesize_fixture(spoken)
             with patch.dict("sys.modules", {"websocket": module}), self.assertRaises(speech.SpeechError):
                 speech.synthesize("fixture", "你想选蓝色吗？")

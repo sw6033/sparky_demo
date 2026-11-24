@@ -5,6 +5,8 @@
 <h1 id="title">今天想聊什么？</h1><div id="reply" class="bubble" aria-live="polite">正在打开小屋…</div>
 <div class="mascot" aria-hidden="true"><div class="ray r1"></div><div class="ray r2"></div><div class="ray r3"></div><div class="fox"><b></b><b></b><div class="face"><i></i><i></i><span></span></div></div></div>
 </section>
-<div id="cascadeControls" hidden><div class="soundbar"><button id="record" type="button">开始说话</button><button id="interrupt" type="button">打断并说话</button><button id="stopVoice" type="button">停止语音</button></div><p class="meta">声音由 AI 生成。录音将发送至 OpenAI 识别，本机不保存录音。</p></div>
+<div id="cascadeControls" hidden><div class="soundbar"><button id="record" type="button">开始说话</button><button id="interrupt" type="button">打断并说话</button><button id="stopVoice" type="button">停止语音</button></div>
+<p><label><input id="continuous" type="checkbox">连续对话：播完自动继续听</label> <label>等待停顿 <select id="pauseLength"><option value="1000">短</option><option value="1500" selected>适中</option><option value="2200">多等一会儿</option></select></label></p>
+<p class="meta">声音由 AI 生成。录音将发送至 OpenAI 识别，本机不保存录音。停止语音或离开页面会停止接听。</p></div>
 <p id="status" role="status"></p><form id="chat"><label class="sr" for="input">告诉 Sparky</label><input id="input" placeholder="也可以打字，按回车告诉 Sparky…" autocomplete="off" enterkeyhint="send" maxlength="800"></form>
 <p id="heard" class="meta"></p></main></body></html>

@@ -36,6 +36,10 @@ class Catalog:
         self.lessons = read_group(root / "lessons")
         for lesson in self.lessons.values():
             assert_fields(lesson, ("title", "icon"))
+            if "capabilities" in lesson:
+                if not isinstance(lesson["capabilities"],dict):
+                    raise ValueError("活动能力说明无效: " + lesson["id"])
+                assert_fields(lesson["capabilities"], ("A", "B"))
             items = lesson["items"]
             if not items or len({x["id"] for x in items}) != len(items):
                 raise ValueError(f"缺少词条或词条重复: {lesson['id']}")

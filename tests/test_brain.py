@@ -17,6 +17,7 @@ class BrainTests(unittest.TestCase):
             payload=json.loads(upstream.call_args.args[0].data)
         self.assertIn("默认以简单自然的英语交流",payload["messages"][0]["content"])
         self.assertIn("当前明确的语言要求优先",payload["messages"][0]["content"])
+        self.assertEqual(payload["messages"][0]["content"],brain.CORE_PROMPT+"\n\n"+brain.PROTOCOL_PROMPT)
         self.assertEqual(json.loads(payload["messages"][1]["content"])["context"]["language_preference"],"bilingual")
 
     def test_invalid_preferences_never_enter_state(self):

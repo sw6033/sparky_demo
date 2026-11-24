@@ -29,7 +29,7 @@ def explicit_request(text):
 
 def acknowledgement(value):
     return {
-        "english": "Of course! I'll speak English. What would you like to talk about?",
-        "chinese": "好呀，我们用中文聊。你想聊什么？",
+        "english": "Of course! I'll speak English.",
+        "chinese": "好呀，我们用中文聊。",
         "bilingual": "Sure! We'll chat in English and use Chinese when it fits.",
     }[value]

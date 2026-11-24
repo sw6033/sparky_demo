@@ -1,6 +1,6 @@
 {
   "id": "animals",
-  "version": 3,
+  "version": 4,
   "title": "小动物见面会",
   "icon": "🐾",
   "activities": {
@@ -83,5 +83,9 @@
     "听小动物的故事",
     "小猫",
     "小狗"
-  ]
+  ],
+  "capabilities": {
+    "A": "Practice introducing a cat or dog with a short Chinese phrase.",
+    "B": "Play a pretend animal-finding game: choose a cat or dog hiding in the grass, then introduce it."
+  }
 }

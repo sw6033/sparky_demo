@@ -6,11 +6,12 @@ import json
 import os
 import re
 import secrets
+import time
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
-from sparky import brain, live, speech
+from sparky import brain, live, speech, segments, diagnostics
 from sparky.content import Catalog, ROOT
 from sparky.store import Store, Missing, Conflict
 
@@ -81,7 +82,7 @@ class Handler(BaseHTTPRequestHandler):
                     "cascade":bool(self.server.cascade_key),"pin":bool(os.getenv("SPARKY_PARENT_PIN"))})
             if match:=re.fullmatch(r"/api/state/([a-f0-9]{32})",path):
                 return self.respond(200,store.state(self.family(),match[1]))
-            assets={"/parent":("parent.html","text/html"),"/parent.js":("parent.js","application/javascript"),"/":("index.html","text/html"),"/app.js":("app.js","application/javascript"),
+            assets={"/debug":("debug.html","text/html"),"/debug.js":("debug.js","application/javascript"),"/parent":("parent.html","text/html"),"/parent.js":("parent.js","application/javascript"),"/":("index.html","text/html"),"/app.js":("app.js","application/javascript"),
                 "/live.js":("live.js","application/javascript"),"/cascade.js":("cascade.js","application/javascript"),"/style.css":("style.css","text/css")}
             if path in assets:
                 name,mime=assets[path]
@@ -107,15 +108,36 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get("Origin")!="http://"+host:
                 raise PermissionError("来源无效。")
             snapshot=store.state(family,pid)
+            turn=string(b,"turn",100) if b.get("turn") else secrets.token_hex(16)
+            started=time.monotonic()
             if path=="/api/transcribe":
-                text=speech.transcribe(self.server.cascade_key,string(b,"audio",4*1024*1024),string(b,"media",100))
+                try:
+                    text=speech.transcribe(self.server.cascade_key,string(b,"audio",4*1024*1024),string(b,"media",100))
+                except speech.SpeechError:
+                    store.trace(family,pid,turn,{"asr_ms":diagnostics.elapsed(started),"asr_status":"failed"})
+                    raise
+                values={"asr_ms":diagnostics.elapsed(started),"asr_status":"ok"}
+                if os.getenv("SPARKY_DEBUG_TRANSCRIPTS")=="1":
+                    values["asr_text"]=text
+                store.trace(family,pid,turn,values)
                 return self.respond(200,{"text":text})
             reply=string(b,"reply",64)
             if snapshot["reply"]["id"]!=reply:
                 raise Conflict("回复已过期。")
-            audio=speech.synthesize(self.server.cascade_key,snapshot["reply"]["text"])
+            part=b.get("segment")
+            parts=segments.attach(snapshot["reply"])["segments"]
+            if part is not None and (type(part) is not int or not 0<=part<len(parts)):
+                raise ValueError("无效语音分句。")
+            text=snapshot["reply"]["text"] if part is None else parts[part]["text"]
+            stage="tts" if part is None else f"tts_{part}"
+            try:
+                audio=speech.synthesize(self.server.cascade_key,text)
+            except speech.SpeechError:
+                store.trace(family,pid,turn,{stage+"_ms":diagnostics.elapsed(started),stage+"_status":"failed"})
+                raise
             if store.state(family,pid)["reply"]["id"]!=reply:
                 raise Conflict("回复已过期。")
+            store.trace(family,pid,turn,{stage+"_ms":diagnostics.elapsed(started),stage+"_status":"ok"})
             return self.respond(200,audio,"audio/wav")
         if path=="/api/live":
             if not self.server.live_key:
@@ -135,10 +157,19 @@ class Handler(BaseHTTPRequestHandler):
             state,duplicate=store.event(family,pid,e)
             return self.respond(200,{"state":state,"duplicate":duplicate})
         if path=="/api/delivery":
-            if b.get("status") not in ("started","complete","interrupted"):
+            if b.get("status") not in ("started","complete","interrupted","failed"):
                 raise ValueError("播放状态无效。")
-            store.delivery(family,pid,string(b,"reply",64),b["status"],string(b,"attempt",80))
+            store.delivery(family,pid,string(b,"reply",64),b["status"],string(b,"attempt",80),b.get("segment"))
             return self.respond(200,{"ok":True})
+        if path=="/api/metrics":
+            metrics=b.get("metrics")
+            if not isinstance(metrics,dict) or any(k not in {"endpoint_wait_ms","first_audio_ms","total_turn_ms","recording_ms"} or type(v) not in (int,float) or not 0<=v<=300000 for k,v in metrics.items()):
+                raise ValueError("无效耗时数据。")
+            store.trace(family,pid,string(b,"turn",100),{"client_metrics":metrics})
+            return self.respond(200,{"ok":True})
+        if path=="/api/debug":
+            self.parent_check()
+            return self.respond(200,store.debug(family,pid))
         if path=="/api/parent":
             self.parent_check()
             op=b.get("op","summary")
@@ -165,8 +196,14 @@ class Handler(BaseHTTPRequestHandler):
     do_GET=handle_request
     do_POST=handle_request
 
+class LocalServer(ThreadingHTTPServer):
+    def server_close(self):
+        if getattr(self,"store",None):
+            self.store.close()
+        super().server_close()
+
 def make_server(port,db_path,catalog=None,live_key=None,cascade_key=None):
-    server=ThreadingHTTPServer(("127.0.0.1",port),Handler)
+    server=LocalServer(("127.0.0.1",port),Handler)
     server.store=Store(db_path,catalog or Catalog())
     server.live_key=live_key
     server.cascade_key=cascade_key

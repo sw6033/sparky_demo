@@ -27,13 +27,13 @@ function fixture(overrides={}) {
     navigator:{mediaDevices:{getUserMedia:()=>pendingMic || Promise.resolve({getTracks:()=>[{stop(){stopped++;}}]})}},
     crypto:webcrypto,AbortController,Blob,Uint8Array,Float32Array,btoa,Date,
     setTimeout,clearTimeout,setInterval,clearInterval,
-    URL:{createObjectURL:()=>"blob:fixture",revokeObjectURL(){}},...overrides.context});
+    document:{hidden:false},URL:{createObjectURL:()=>"blob:fixture",revokeObjectURL(){}},...overrides.context});
   const CascadeVoice=vm.runInContext(fs.readFileSync(require.resolve("../web/cascade.js"),"utf8")+"\nCascadeVoice",context);
   const voice=new CascadeVoice({
     transcribe:async()=>({text:"我想画画"}),
     turn:async(text,source)=>{calls.push({text,source});return {state:{reply:{id:"reply",text:"好的"}}};},
     speech:async()=>new Blob(["wave"]),
-    delivery:(playback,phase)=>receipts.push({id:playback.id,phase}),
+    delivery:(playback,phase)=>receipts.push({id:playback.id,phase,...(playback.segment===undefined?{}:{segment:playback.segment})}),
     status:message=>statuses.push(message),changed(){},heard(){},...overrides
   });
   return {voice,receipts,statuses,calls,stopCount:()=>stopped,setMic:value=>{pendingMic=value;}};
@@ -101,7 +101,7 @@ test("playback failure does not claim completed delivery",async()=>{
   const {voice,receipts}=fixture();
   voice.audio.play=async()=>{throw Object.assign(new Error("blocked"),{name:"NotAllowedError"});};
   await voice.text("你好");
-  assert.deepEqual(receipts,[]);
+  assert.deepEqual(receipts,[{id:"reply",phase:"failed"}]);
 });
 
 test("queued brain work receives an invalidation check and cannot trigger late speech",async()=>{
@@ -117,4 +117,84 @@ test("queued brain work receives an invalidation check and cannot trigger late s
   finishTurn({state:{reply:{id:"old",text:"过期回复"}}});
   await pending;
   assert.deepEqual(receipts,[]);
+});
+
+test("short whole audio makes one request and interruption never claims partial completion",async()=>{
+  const requested=[];
+  const {voice,receipts}=fixture({
+    turn:async()=>({state:{reply:{id:"r",text:"Hi! Take your time.",speech_mode:"whole",segments:[{index:0,text:"Hi!"},{index:1,text:"Take your time."}]}}}),
+    speech:async(id,signal,index)=>{requested.push(index);return new Blob(["whole"]);}
+  });
+  await voice.text("Hi");
+  assert.deepEqual(requested,[undefined]);
+  const lateEnd=voice.audio.onended;
+  voice.stop();lateEnd();
+  assert.deepEqual(receipts,[{id:"r",phase:"started"},{id:"r",phase:"interrupted"}]);
+});
+
+test("first sentence plays while the second is pending, with separate receipts",async()=>{
+  let resolveSecond;
+  const requested=[];
+  const {voice,receipts}=fixture({
+    turn:async()=>({state:{reply:{id:"r",text:"Hi! Try this.",segments:[{index:0,text:"Hi!"},{index:1,text:"Try this."}]}}}),
+    speech:async(id,signal,index)=>{requested.push(index);return index===0?new Blob(["first"]):new Promise(resolve=>{resolveSecond=resolve;});}
+  });
+  await voice.text("Hi");
+  assert.deepEqual(requested,[0,1]);
+  assert.deepEqual(receipts,[{id:"r",segment:0,phase:"started"}]);
+  const oldEnd=voice.audio.onended;
+  voice.audio.onended();
+  assert.equal(receipts.at(-1).phase,"complete");
+  resolveSecond(new Blob(["second"]));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(receipts.at(-1),{id:"r",segment:1,phase:"started"});
+  oldEnd();
+  assert.equal(receipts.length,3);
+  voice.stop();
+  assert.deepEqual(receipts.at(-1),{id:"r",segment:1,phase:"interrupted"});
+});
+
+test("interrupt drops a prefetched sentence and does not reopen microphone",async()=>{
+  let resolveSecond;
+  const {voice,receipts}=fixture({continuous:true,
+    turn:async()=>({state:{reply:{id:"r",segments:[{index:0,text:"One."},{index:1,text:"Two."}]}}}),
+    speech:async(id,signal,index)=>index===0?new Blob(["one"]):new Promise(resolve=>{resolveSecond=resolve;})});
+  await voice.text("Hi");
+  const lateEnd=voice.audio.onended;
+  voice.stop();resolveSecond(new Blob(["two"]));lateEnd();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(receipts.some(r=>r.segment===1),false);
+  assert.equal(voice.recording,false);
+});
+
+test("continuous conversation rearms only while enabled and visible",async()=>{
+  const {voice}=fixture({continuous:true});
+  await voice.text("Hi");voice.audio.onended();
+  await new Promise(resolve=>setTimeout(resolve,400));
+  assert.equal(voice.recording,true);
+  voice.stop();
+  await voice.text("Hi");voice.audio.onended();voice.continuous=false;
+  await new Promise(resolve=>setTimeout(resolve,400));
+  assert.equal(voice.recording,false);
+  voice.stop();
+});
+
+test("short utterance gets hesitation time and silence uses the selected threshold",async()=>{
+  let now=1000,energy=0,measure;
+  class AudioContext{
+    createAnalyser(){return {getFloatTimeDomainData(samples){samples.fill(energy);}};}
+    createMediaStreamSource(){return {connect(){}};}
+    async close(){}
+  }
+  const {voice}=fixture({silenceMs:1000,context:{window:{AudioContext,MediaRecorder:true},Date:{now:()=>now},
+    setInterval:callback=>{measure=callback;return 1;},clearInterval(){},setTimeout:()=>1,clearTimeout(){}}});
+  await voice.start();
+  now=1100;energy=.05;measure();
+  now=2600;energy=0;measure();
+  assert.equal(voice.recording,true);
+  now=3200;measure();
+  await voice.recorder.done;
+  assert.equal(voice.recording,false);
+  assert.equal(voice.timing.endpoint_wait_ms,2100);
+  voice.stop();
 });

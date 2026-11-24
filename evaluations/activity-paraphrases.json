@@ -1,0 +1,136 @@
+[
+  {
+    "name": "New drawing request 1",
+    "turns": [
+      {
+        "text": "I want to paint with you now.",
+        "expect": {
+          "lesson": "color",
+          "mode": "B"
+        }
+      }
+    ]
+  },
+  {
+    "name": "New drawing request 2",
+    "turns": [
+      {
+        "text": "Shall we make a rainbow together?",
+        "expect": {
+          "lesson": "color",
+          "mode": "B"
+        }
+      }
+    ]
+  },
+  {
+    "name": "New drawing request 3",
+    "turns": [
+      {
+        "text": "Could we try a drawing game?",
+        "expect": {
+          "lesson": "color",
+          "mode": "B"
+        }
+      }
+    ]
+  },
+  {
+    "name": "No unintended activity 1",
+    "turns": [
+      {
+        "text": "I painted a rainbow yesterday.",
+        "expect": {
+          "idle": true
+        }
+      }
+    ]
+  },
+  {
+    "name": "No unintended activity 2",
+    "turns": [
+      {
+        "text": "I love painting.",
+        "expect": {
+          "idle": true
+        }
+      }
+    ]
+  },
+  {
+    "name": "No unintended activity 3",
+    "turns": [
+      {
+        "text": "I do not want to draw right now.",
+        "expect": {
+          "idle": true
+        }
+      }
+    ]
+  },
+  {
+    "name": "No unintended activity 4",
+    "turns": [
+      {
+        "text": "My brother asked, \"Can we draw?\", yesterday.",
+        "expect": {
+          "idle": true
+        }
+      }
+    ]
+  },
+  {
+    "name": "No unintended activity 5",
+    "turns": [
+      {
+        "text": "Maybe we can draw tomorrow, but now I want to tell you a story.",
+        "expect": {
+          "idle": true
+        }
+      }
+    ]
+  },
+  {
+    "name": "No unintended activity 6",
+    "turns": [
+      {
+        "text": "Can you sing a song for me?",
+        "expect": {
+          "idle": true
+        }
+      }
+    ]
+  },
+  {
+    "name": "Painting pause resume paraphrases",
+    "turns": [
+      {
+        "text": "Let us paint something together.",
+        "expect": {
+          "lesson": "color",
+          "mode": "B"
+        }
+      },
+      {
+        "text": "Hold on, I need a rest.",
+        "expect": {
+          "paused": "color"
+        }
+      },
+      {
+        "text": "I am back. Let us carry on with our picture.",
+        "expect": {
+          "lesson": "color",
+          "mode": "B"
+        }
+      },
+      {
+        "text": "Now I would rather play the animal game.",
+        "expect": {
+          "lesson": "animals",
+          "mode": "B"
+        }
+      }
+    ]
+  }
+]

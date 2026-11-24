@@ -2,3 +2,4 @@
 
 
 .parentPage{max-width:650px;padding-top:32px}.parentPage a{color:#285b49}.conversation{display:flex;flex-direction:column;justify-content:center}.conversation .bubble{max-width:72%}#heard{overflow-wrap:anywhere}#status{margin-top:18px}@media(max-width:650px){.conversation .bubble{max-width:100%}}
+#cascadeControls label{display:inline-flex;align-items:center;gap:8px;margin:6px 14px 6px 0;font-size:14px}#continuous{flex:none;width:18px;height:18px;padding:0;accent-color:#285b49}#pauseLength{font-size:14px;padding:5px 10px;min-height:34px}

@@ -1,6 +1,6 @@
 {
   "id": "body",
-  "version": 3,
+  "version": 4,
   "title": "听一听，找一找",
   "icon": "👋",
   "goals": {
@@ -70,5 +70,9 @@
   "entry_phrases": [
     "找小手",
     "找鼻子"
-  ]
+  ],
+  "capabilities": {
+    "A": "Practice naming a hand or nose with a short Chinese phrase.",
+    "B": "Play a listen-and-find body-parts game: listen to a Chinese word and choose the matching hand or nose."
+  }
 }

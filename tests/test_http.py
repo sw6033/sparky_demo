@@ -125,6 +125,36 @@ class HTTPTests(unittest.TestCase):
             self.assertIn("I'll speak English",tts.call_args.args[1])
         self.assertEqual(self.call("/api/parent",{"profile":pid})["observations"],[])
 
+    @patch("server.speech.synthesize",return_value=b"RIFF-part")
+    def test_segment_speech_and_debug_auth(self, tts):
+        self.server.cascade_key="fixture"
+        pid=self.call("/api/profile",{"name":"分句测试"})["id"]
+        state=self.call("/api/state/"+pid)
+        state=self.call("/api/event",{"profile":pid,"event":{"id":"turn-debug","revision":state["revision"],"type":"utterance","text":"Speak English"}})["state"]
+        reply=state["reply"]
+        with self.audio_call("/api/speech",{"profile":pid,"reply":reply["id"],"segment":0,"turn":"turn-debug"}) as response:
+            self.assertEqual(response.read(),b"RIFF-part")
+        tts.assert_called_once_with("fixture",reply["segments"][0]["text"])
+        with self.assertRaises(HTTPError) as exc:
+            self.audio_call("/api/speech",{"profile":pid,"reply":reply["id"],"segment":100})
+        self.assertEqual(exc.exception.code,400)
+        self.call("/api/metrics",{"profile":pid,"turn":"turn-debug","metrics":{"first_audio_ms":321}})
+        with self.assertRaises(HTTPError) as exc:
+            self.call("/api/debug",{"profile":pid},"wrong")
+        self.assertEqual(exc.exception.code,403)
+        debug=self.call("/api/debug",{"profile":pid})
+        self.assertIn("你是 Sparky",debug["prompt"])
+        row=next(r for r in debug["turns"] if r["turn"]=="turn-debug")
+        self.assertIn("tts_0_ms",row)
+        self.assertEqual(row["client_metrics"]["first_audio_ms"],321)
+        self.assertNotIn("input",row)
+        self.assertNotIn("reply",row)
+        foreign=request.build_opener(request.HTTPCookieProcessor(CookieJar()))
+        req=request.Request(self.base+"/api/debug",data=json.dumps({"profile":pid}).encode(),headers={"Content-Type":"application/json","X-Parent-Pin":"1234"})
+        with self.assertRaises(HTTPError) as exc:
+            foreign.open(req)
+        self.assertEqual(exc.exception.code,404)
+
     @patch("server.speech.synthesize")
     def test_cascade_rejects_bad_origin_foreign_profile_and_stale_reply(self, tts):
         self.server.cascade_key="fixture"

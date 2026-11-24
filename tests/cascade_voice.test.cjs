@@ -63,6 +63,25 @@ test("stopping pending ASR never calls the brain",async()=>{
   assert.equal(calls.length,0);
 });
 
+test("interrupt aborts pending brain request and sends cancellation before next turn",async()=>{
+  const cancelled=[], order=[];
+  let signal;
+  const {voice}=fixture({
+    cancel:async id=>{cancelled.push(id);order.push("cancel");},
+    turn:(text,source,current,id,s)=>{
+      signal=s;order.push(text);
+      if(text==="old")return new Promise((resolve,reject)=>s.addEventListener("abort",()=>reject(Object.assign(new Error("cancelled"),{name:"AbortError"}))));
+      return Promise.resolve({state:{reply:{id:"new",text:"I'm listening."}}});
+    }
+  });
+  const old=voice.text("old");const oldId=voice.turnId;
+  voice.stop();assert.equal(signal.aborted,true);
+  await voice.text("new");await old;
+  assert.deepEqual(cancelled,[oldId]);
+  assert.deepEqual(order,["old","cancel","new"]);
+  voice.stop();
+});
+
 test("stopping pending TTS prevents late playback",async()=>{
   let resolveSpeech;
   const {voice,receipts}=fixture({speech:()=>new Promise(resolve=>{resolveSpeech=resolve;})});

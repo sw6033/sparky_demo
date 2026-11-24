@@ -11,7 +11,7 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
-from sparky import brain, live, speech, segments, diagnostics
+from sparky import brain, live, speech, segments, diagnostics, access
 from sparky.content import Catalog, ROOT
 from sparky.store import Store, Missing, Conflict
 
@@ -51,8 +51,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length",str(len(body)))
         self.send_header("Cache-Control","no-store")
         self.send_header("X-Content-Type-Options","nosniff")
+        self.send_header("Referrer-Policy","no-referrer")
+        self.send_header("X-Frame-Options","DENY")
+        secure="; Secure" if self.server.gate.origin else ""
+        if getattr(self,"access_cookie",None):
+            self.send_header("Set-Cookie","sparky_access="+self.access_cookie+"; HttpOnly; SameSite=Strict; Path=/; Max-Age=7200"+secure)
         if getattr(self,"new_cookie",None):
-            self.send_header("Set-Cookie","sparky_family="+self.new_cookie+"; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000")
+            self.send_header("Set-Cookie","sparky_family="+self.new_cookie+"; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000"+secure)
         self.end_headers()
         self.wfile.write(body)
 
@@ -70,9 +75,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def route(self):
         host=self.headers.get("Host","")
-        if urlsplit("//"+host).hostname not in {"localhost","127.0.0.1","::1"}:
+        gate=self.server.gate
+        if host!=gate.host and urlsplit("//"+host).hostname not in {"localhost","127.0.0.1","::1"}:
             raise PermissionError("仅允许本机访问。")
         path=urlsplit(self.path).path
+        origin=gate.origin if host==gate.host else "http://"+host
+        if not gate.allow(self,path):return
         store=self.server.store
         if self.command=="GET":
             if path=="/api/home":
@@ -88,7 +96,7 @@ class Handler(BaseHTTPRequestHandler):
                 name,mime=assets[path]
                 return self.respond(200,(ROOT/"web"/name).read_bytes(),mime+"; charset=utf-8")
             raise Missing()
-        if self.headers.get("Origin") and self.headers["Origin"]!="http://"+host:
+        if self.headers.get("Origin") and self.headers["Origin"]!=origin:
             raise PermissionError("来源无效。")
         length=int(self.headers.get("Content-Length","0"))
         limit=4*1024*1024+4096 if path=="/api/transcribe" else (65536 if path=="/api/live" else 16384)
@@ -102,10 +110,13 @@ class Handler(BaseHTTPRequestHandler):
             self.parent_check()
             return self.respond(201,{"id":store.create(family,string(b,"name",32))})
         pid=string(b,"profile",40)
+        if path=="/api/cancel":
+            store.cancel(family,pid,string(b,"turn",100))
+            return self.respond(200,{"ok":True})
         if path in {"/api/transcribe", "/api/speech"}:
             if not self.server.cascade_key:
                 return self.respond(503,{"error":"尚未开启 Cascade 语音。"})
-            if self.headers.get("Origin")!="http://"+host:
+            if self.headers.get("Origin")!=origin:
                 raise PermissionError("来源无效。")
             snapshot=store.state(family,pid)
             turn=string(b,"turn",100) if b.get("turn") else secrets.token_hex(16)
@@ -142,7 +153,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=="/api/live":
             if not self.server.live_key:
                 return self.respond(503,{"error":"本机尚未开启 GPT-Live 成人测试。"})
-            if self.headers.get("Origin")!="http://"+host:
+            if self.headers.get("Origin")!=origin:
                 raise PermissionError("来源无效。")
             store.state(family,pid)
             sdp=b.get("sdp")
@@ -203,8 +214,10 @@ class LocalServer(ThreadingHTTPServer):
             self.store.close()
         super().server_close()
 
-def make_server(port,db_path,catalog=None,live_key=None,cascade_key=None):
+def make_server(port,db_path,catalog=None,live_key=None,cascade_key=None,public_url="",access_token=""):
+    gate=access.Gate(public_url,access_token)
     server=LocalServer(("127.0.0.1",port),Handler)
+    server.gate=gate
     server.store=Store(db_path,catalog or Catalog())
     server.live_key=live_key
     server.cascade_key=cascade_key
@@ -214,6 +227,7 @@ if __name__=="__main__":
     parser=argparse.ArgumentParser()
     parser.add_argument("--port",type=int)
     parser.add_argument("--db")
+    parser.add_argument("--public-url",default="",help="Quick Tunnel 的完整 HTTPS 根地址；将隐藏询问试用口令")
     modes=parser.add_mutually_exclusive_group()
     modes.add_argument("--live-test",action="store_true",help="成人模拟 GPT-Live 语音测试")
     modes.add_argument("--cascade",action="store_true",help="OpenAI ASR → C/A/B → TTS")
@@ -236,8 +250,12 @@ if __name__=="__main__":
             os.environ["SPARKY_MODEL_KEY"]=key
     port=args.port if args.port is not None else (8766 if args.live_test else 8765)
     db=args.db or ROOT/".data"/("adult-live-test.sqlite3" if args.live_test else "sparky.sqlite3")
+    access_token=""
+    if args.public_url:
+        from getpass import getpass
+        access_token=os.getenv("SPARKY_ACCESS_TOKEN") or getpass("试用访问口令（至少 16 字符，隐藏输入）：")
     server=make_server(port,db,Catalog(args.curriculum),live_key=key if args.live_test else None,
-                       cascade_key=key if args.cascade else None)
+                       cascade_key=key if args.cascade else None,public_url=args.public_url,access_token=access_token)
     print(f"Sparky  http://127.0.0.1:{server.server_port}",flush=True)
     try:
         server.serve_forever()

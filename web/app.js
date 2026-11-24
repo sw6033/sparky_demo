@@ -7,11 +7,12 @@ let voice = Boolean(Recognition), quietTurns = 0, listenTimer, pendingReceipt = 
 let liveCall, creatingProfile, turnQueue = Promise.resolve();
 let resumeLive = false;
 let cascade;
+let resyncAfterCancel=false;
 const status = message => { $("status").textContent = message; };
 
-async function api(path, body) {
+async function api(path, body, signal) {
   const options = body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)} : {};
-  const response = await fetch(path, options);
+  const response = await fetch(path, {...options,signal});
   const data = await response.json();
   if (!response.ok) throw Object.assign(new Error(data.error || "请稍后再试。"), {code:response.status});
   return data;
@@ -32,20 +33,23 @@ async function ensureProfile() {
   })().finally(()=>{creatingProfile=null;});
   await creatingProfile;
 }
-function courseTurn(text, source, confidence, id=crypto.randomUUID(), isCurrent=()=>true) {
+function courseTurn(text, source, confidence, id=crypto.randomUUID(), isCurrent=()=>true, signal) {
   const next = turnQueue.then(async () => {
     await pendingReceipt;
     if (!isCurrent()) throw new DOMException("本轮已取消。","AbortError");
     await ensureProfile();
     if (!isCurrent()) throw new DOMException("本轮已取消。","AbortError");
+    if(resyncAfterCancel){state=await api("/api/state/"+profile,undefined,signal);resyncAfterCancel=false;}
     const event={id,revision:state.revision,type:"utterance",text,source,confidence};
-    const send=()=>api("/api/event",{profile,event});
+    const send=()=>api("/api/event",{profile,event},signal);
     let result;
     try { result=await send(); } catch(err) {
+      if(err.name==="AbortError" || !isCurrent())throw err;
       if(err.code===409) {state=await api("/api/state/"+profile);render();}
       if(err.code) throw err;
       result=await send();
     }
+    if (!isCurrent()) throw new DOMException("本轮已取消。","AbortError");
     state=result.state;
     render();
     return result;
@@ -221,7 +225,8 @@ window.addEventListener("pagehide",suspend);
     cascade=new CascadeVoice({
       transcribe:async(audio,media,signal,turn)=>(await speechRequest("/api/transcribe",{audio,media,turn},signal)).json(),
       speech:async(reply,signal,segment,turn)=>(await speechRequest("/api/speech",{reply,segment,turn},signal)).blob(),
-      turn:(text,source,isCurrent,turn)=>courseTurn(text,source,undefined,turn,isCurrent),
+      turn:(text,source,isCurrent,turn,signal)=>courseTurn(text,source,undefined,turn,isCurrent,signal),
+      cancel:turn=>{resyncAfterCancel=true;return profile?api("/api/cancel",{profile,turn}):Promise.resolve();},
       metrics:(turn,metrics)=>api("/api/metrics",{profile,turn,metrics}).catch(()=>{}),
       delivery:(playback,phase)=>receipt({...playback,profile},phase),
       status, heard:text=>{$("heard").textContent="你说「"+text+"」";},

@@ -1,8 +1,8 @@
 "use strict";
 
 class CascadeVoice {
-  constructor({transcribe, turn, speech, delivery, status, changed, heard, metrics=()=>{}, continuous=false, silenceMs=1500}) {
-    Object.assign(this, {transcribe, turn, speech, delivery, status, changed, heard, metrics, continuous, silenceMs});
+  constructor({transcribe, turn, speech, delivery, status, changed, heard, metrics=()=>{}, cancel=()=>{}, continuous=false, silenceMs=1500}) {
+    Object.assign(this, {transcribe, turn, speech, delivery, status, changed, heard, metrics, cancel, continuous, silenceMs});
     this.epoch = 0;
     this.audio = new Audio();
     this.recording = false;
@@ -14,6 +14,11 @@ class CascadeVoice {
     this.epoch++;
     clearTimeout(this.autoListen);
     this.controller?.abort();
+    if(this.turnId && this.processing){
+      const turn=this.turnId;
+      this.cancelPending=Promise.resolve().then(()=>this.cancel(turn)).catch(()=>{});
+    }
+    this.processing=false;
     clearInterval(this.meter);
     clearTimeout(this.limit);
     if (this.recorder?.state === "recording") this.recorder.stop();
@@ -138,10 +143,14 @@ class CascadeVoice {
 
   async run(text, source, token) {
     if (!this.current(token)) return;
+    if(this.cancelPending)await this.cancelPending;
+    if (!this.current(token)) return;
+    this.processing=true;
     this.status("Sparky 正在想…");
-    const result = await this.turn(text, source, ()=>this.current(token), this.turnId);
+    const result = await this.turn(text, source, ()=>this.current(token), this.turnId, this.controller.signal);
     if (!this.current(token)) return;
     await this.play(result.state.reply, token);
+    if(this.current(token))this.processing=false;
   }
 
   async play(reply, token) {

@@ -140,3 +140,31 @@ python3 -m unittest discover -s tests -v
 
 演示使用临时数据库，经过实际活动运行时并展示恢复后的步骤及学习观察。测试覆盖新课件装载、跨版本恢复、听辨、表达、练习切换、提示送达、并发重试、档案隔离与删除。HTTP 测试在本机创建临时服务，用可控的模型协议样例验证调用和动作校验。真实儿童语音识别、自由对话质量、家庭环境下的打断体验和端到端延迟需在目标设备实测。
 
+
+### 陪伴、安全与家长设置
+
+`/parent` 可设置英语母语表达水平（尚在发展 / 较熟练 / 未知）；中文为目标语言。模型根据家长信息选择情境示范或简短英文解释，明确语言请求始终优先。普通兴趣可以由家长确认、删除；后台从较短对话开始保存摘要，家长可以查看和清除。摘要是模型生成的线索，不等于经过人工确认的永久记忆。
+
+危险、强烈情绪和伤害披露可选择 `support`，保存并暂停已有活动，不计为学习表现；恢复需要新的明确意愿。少数明确危险表达有不依赖模型的应急回复，其余依赖模型理解，不能视为完备的安全分类器。系统不能报警或通知家长。披露回应原则参考 [NSPCC](https://learning.nspcc.org.uk/child-abuse-and-neglect/recognising-and-responding-to-abuse)：接纳、不责备、不诱导细节、不承诺保密、寻找安全的大人。
+
+打断时浏览器立即停播并中止旧 HTTP 请求；`/api/cancel` 让尚未提交的旧轮次失效，新轮次重新同步进度。已经提交的活动不回滚；已发出的上游请求仍可能运行并计费。现在支持按钮打断和可关闭的连续接听，尚未实现播放时自动识别孩子插话，不是全双工。
+
+### 人工评审和模拟小朋友
+
+`evaluations/golden-review.json` 是 10 段**待人工审核草稿**，不是人工金标准。先由人修改标准、示例并填写每段 `review.reviewer`、`review.status=approved`，再执行：
+
+```sh
+.venv/bin/python -m sparky.simulate --run
+```
+
+模拟器使用临时档案，由虚构小朋友根据上一轮实际回复继续对话，另附模型评审建议。尚未全部人工审核时不会调用模型；模型评审不替代人工安全和对话质量判断。
+
+### Cloudflare 临时试用
+
+先运行官方 `cloudflared tunnel --url http://127.0.0.1:8780 --protocol http2`，获得 HTTPS 地址后启动：
+
+```sh
+.venv/bin/python server.py --cascade --port 8780 --db .data/quick-demo.sqlite3 --public-url https://YOUR-URL.trycloudflare.com
+```
+
+按隐藏提示输入 OpenAI Key 和至少 16 字符试用口令。仅分享试用口令，API Key 不进入浏览器。公开入口校验固定 Host/Origin、使用 Secure/HttpOnly Cookie，并对模型相关请求限流；旧本机模式不受影响。试用数据库独立，文件、录音和 API Key 不随代码提交。Quick Tunnel 免费且临时，需要本机和隧道持续运行，断开后原地址可能失效；API 调用仍按用量收费。[Cloudflare 官方说明](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)

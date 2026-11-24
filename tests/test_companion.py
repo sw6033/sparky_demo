@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 from sparky import care
 from sparky.content import Catalog
-from sparky.store import Store
+from sparky.store import Store, Conflict
 
 class CompanionTests(unittest.TestCase):
     def setUp(self):
@@ -30,6 +30,11 @@ class CompanionTests(unittest.TestCase):
     def test_offline_backstop_does_not_match_stories_or_negation(self):
         for text in ('My doll said "I swallowed pills".','I do not want to hurt myself.','The dragon ate a battery in my story.'):
             self.assertFalse(care.immediate(text))
+    def test_unreviewed_golden_cases_cannot_run_simulation(self):
+        from sparky.simulate import reviewed
+        self.assertFalse(reviewed([{"review":{"status":"pending_human_review","reviewer":None}}]))
+        self.assertFalse(reviewed([]))
+        self.assertTrue(reviewed([{"review":{"status":"approved","reviewer":"parent"}}]))
     def test_semantic_distress_holds_both_activity_modes_and_can_resume(self):
         self.turn(type="start",lesson="animals",mode="B")
         self.turn(type="start",lesson="animals",mode="A")

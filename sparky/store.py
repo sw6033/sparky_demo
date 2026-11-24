@@ -1,326 +1,609 @@
-import hashlib
+"""SQLite persistence for learner profiles, multi-session turns, mastery, memory & POC presets."""
+from __future__ import annotations
+
 import json
 import sqlite3
 import time
-import os
-from copy import deepcopy
-from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
+import uuid
 from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
-from . import runtime, language, brain, diagnostics, planning, segments, care
+from typing import Callable
 
-def dump(value):
-    return json.dumps(value,ensure_ascii=False,separators=(",",":"),sort_keys=True)
+from . import diagnostics, mastery, memory, segments
+from .curriculum import Curriculum
 
-class Conflict(Exception):
-    pass
 
 class Missing(Exception):
     pass
 
+
+class Conflict(Exception):
+    pass
+
+
+def _dump(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _uid() -> str:
+    return uuid.uuid4().hex
+
+
+def _new_session_state(session_num: int, opening_text: str, opening_cards: list[dict] | None = None) -> dict:
+    reply_id = _uid()
+    segs = segments.make_segments(opening_text)
+    return {
+        "id": _uid(),
+        "session_num": session_num,
+        "turn_count": 0,
+        "cooldown_until_turn": 0,
+        "new_targets_introduced": [],
+        "dynamic_words_created": 0,
+        "active_playlet": None,
+        "ui_cards": opening_cards or [],
+        "latest_reply": {
+            "id": reply_id,
+            "text": opening_text,
+            "delivery": "pending",
+            "segments": segs,
+        },
+    }
+
+
 class Store:
-    def __init__(self,path,catalog):
-        self.path=Path(path)
-        self.path.parent.mkdir(parents=True,exist_ok=True)
-        self.catalog=catalog
-        self.history={}
-        self.history_lock=Lock()
-        self.summary_pool=ThreadPoolExecutor(max_workers=2,thread_name_prefix="sparky-summary")
-        self.summary_lock=Lock()
-        self.summary_pending={}
-        self.summary_running=set()
-        self.closed=False
-        with self.db() as db:
-            db.executescript("""
-              PRAGMA journal_mode=WAL;
-              CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY, family TEXT NOT NULL, name TEXT NOT NULL, snapshot TEXT NOT NULL);
-              CREATE INDEX IF NOT EXISTS family_index ON profiles(family);
-              CREATE TABLE IF NOT EXISTS events(profile TEXT REFERENCES profiles ON DELETE CASCADE, id TEXT, digest TEXT NOT NULL, PRIMARY KEY(profile,id));
-              CREATE TABLE IF NOT EXISTS observations(profile TEXT REFERENCES profiles ON DELETE CASCADE, event TEXT, timestamp INTEGER, record TEXT NOT NULL, PRIMARY KEY(profile,event));
-              CREATE TABLE IF NOT EXISTS memories(profile TEXT REFERENCES profiles ON DELETE CASCADE, id TEXT, value TEXT NOT NULL, PRIMARY KEY(profile,id));
-              CREATE TABLE IF NOT EXISTS traces(profile TEXT REFERENCES profiles ON DELETE CASCADE, turn TEXT, created REAL, data TEXT NOT NULL, PRIMARY KEY(profile,turn));
-              CREATE TABLE IF NOT EXISTS summaries(profile TEXT PRIMARY KEY REFERENCES profiles ON DELETE CASCADE, epoch INTEGER, revision INTEGER, data TEXT NOT NULL);
-              CREATE TABLE IF NOT EXISTS cancellations(profile TEXT REFERENCES profiles ON DELETE CASCADE, turn TEXT, created REAL, PRIMARY KEY(profile,turn));
-            """)
+    def __init__(self, db_path: Path | str, curriculum: Curriculum):
+        self.path = Path(db_path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.curriculum = curriculum
+        with self._conn() as db:
+            db.executescript(
+                """
+                PRAGMA journal_mode=WAL;
+                PRAGMA foreign_keys=ON;
+                CREATE TABLE IF NOT EXISTS profiles(
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    preset TEXT NOT NULL DEFAULT 'fresh',
+                    created_at REAL NOT NULL,
+                    state_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS turns(
+                    id TEXT PRIMARY KEY,
+                    profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+                    session_num INTEGER NOT NULL,
+                    turn_index INTEGER NOT NULL,
+                    created_at REAL NOT NULL,
+                    user_text TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    reply_id TEXT NOT NULL,
+                    reply_text TEXT NOT NULL,
+                    move TEXT NOT NULL,
+                    ui_cards_json TEXT NOT NULL,
+                    meta_json TEXT NOT NULL,
+                    focus_json TEXT NOT NULL,
+                    delivery_json TEXT NOT NULL,
+                    timing_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS turns_profile_session ON turns(profile_id, session_num, turn_index);
+                CREATE TABLE IF NOT EXISTS cancellations(
+                    profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+                    turn_id TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY(profile_id, turn_id)
+                );
+                """
+            )
+
     @contextmanager
-    def db(self):
-        db=sqlite3.connect(self.path,timeout=8)
-        db.row_factory=sqlite3.Row
-        db.execute("PRAGMA foreign_keys=ON")
+    def _conn(self):
+        conn = sqlite3.connect(self.path, timeout=10)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
         try:
-            with db:
-                yield db
+            with conn:
+                yield conn
         finally:
-            db.close()
+            conn.close()
 
-    def create(self,family,name):
-        pid=runtime.uid()
-        with self.db() as db:
-            db.execute("INSERT INTO profiles VALUES(?,?,?,?)",(pid,family,name,dump(runtime.initial())))
-        return pid
+    def close(self) -> None:
+        pass
 
-    def profiles(self,family):
-        with self.db() as db:
-            return [dict(x) for x in db.execute("SELECT id,name FROM profiles WHERE family=? ORDER BY rowid",(family,))]
+    def list_profiles(self) -> list[dict]:
+        with self._conn() as db:
+            rows = db.execute("SELECT id, name, preset, created_at, state_json FROM profiles ORDER BY created_at ASC").fetchall()
+        out = []
+        for r in rows:
+            st = json.loads(r["state_json"])
+            out.append({
+                "id": r["id"],
+                "name": r["name"],
+                "preset": r["preset"],
+                "session_num": st["active_session"]["session_num"],
+            })
+        return out
 
-    def load(self,db,family,pid):
-        row=db.execute("SELECT snapshot FROM profiles WHERE family=? AND id=?",(family,pid)).fetchone()
+    def create_profile(self, name: str, preset: str = "fresh") -> dict:
+        clean_name = (name or "").strip()[:32] or ("Maya" if preset == "returning_dino" else "Leo")
+        pid = _uid()
+        if preset == "returning_dino":
+            state = self._seed_returning_dino(clean_name)
+        else:
+            preset = "fresh"
+            opening = (
+                f"Hey there! I'm Sparky, your bilingual fox buddy! "
+                f"What's your name, or what fun thing were you up to today?"
+            )
+            state = {
+                "revision": 0,
+                "language_mode": "bilingual",
+                "mastery_ledger": {},
+                "personal_lexicon": [],
+                "memory": memory.initial_memory(clean_name if clean_name not in {"小朋友", "New Kid"} else ""),
+                "active_session": _new_session_state(1, opening),
+            }
+        with self._conn() as db:
+            db.execute(
+                "INSERT INTO profiles(id, name, preset, created_at, state_json) VALUES(?, ?, ?, ?, ?)",
+                (pid, clean_name, preset, time.time(), _dump(state)),
+            )
+        return self.public_state(pid)
+
+    def _seed_returning_dino(self, name: str) -> dict:
+        """Pre-seed a child entering Session 2 after completing Unit 1 & sharing dinosaur interest."""
+        ledger = {
+            "voc_nihao": {**mastery.default_entry(), "stage": "mastered", "exposures": 3, "uses": 3, "spontaneous_uses": 2, "last_session": 1, "last_turn": 4, "last_outcome": "spontaneous_use"},
+            "voc_henhao": {**mastery.default_entry(), "stage": "practiced", "exposures": 2, "uses": 2, "spontaneous_uses": 1, "last_session": 1, "last_turn": 3, "last_outcome": "scaffolded_use"},
+            "voc_pengyou": {**mastery.default_entry(), "stage": "practiced", "exposures": 2, "uses": 1, "spontaneous_uses": 0, "last_session": 1, "last_turn": 5, "last_outcome": "scaffolded_use"},
+            "pat_hello_name": {**mastery.default_entry(), "stage": "practiced", "exposures": 2, "uses": 2, "spontaneous_uses": 1, "last_session": 1, "last_turn": 4, "last_outcome": "scaffolded_use"},
+        }
+        mem = memory.initial_memory(name)
+        mem["facts"] = [
+            {"id": "seed1", "text": f"{name} built a giant Lego T-Rex named Chomper", "session": 1},
+            {"id": "seed2", "text": "Loves dinosaurs and space rockets", "session": 1},
+        ]
+        mem["episodic_summaries"] = [
+            {
+                "session_num": 1,
+                "turn_count": 5,
+                "summary": f"Met {name}, talked about building a Lego T-Rex named Chomper, and practiced our secret friend greeting in Chinese.",
+                "highlights": ["Built a Lego T-Rex named Chomper", "Became 好朋友 (good friends) with Sparky"],
+                "open_threads": ["Ask if Chomper the Lego T-Rex went on any new adventures today"],
+                "practiced_zh": ["你好", f"你好，我是{name}", "很好", "好朋友"],
+            }
+        ]
+        opening = (
+            f"你好, {name}! Welcome back, my 好朋友! "
+            f"Did Chomper your Lego T-Rex go on any wild adventures since last time?"
+        )
+        cards = [c for c in (self.curriculum.card_for("voc_nihao"), self.curriculum.card_for("voc_pengyou")) if c]
+        return {
+            "revision": 0,
+            "language_mode": "bilingual",
+            "mastery_ledger": ledger,
+            "personal_lexicon": [],
+            "memory": mem,
+            "active_session": _new_session_state(2, opening, cards),
+        }
+
+    def delete_profile(self, pid: str) -> None:
+        with self._conn() as db:
+            cur = db.execute("DELETE FROM profiles WHERE id = ?", (pid,))
+            if cur.rowcount == 0:
+                raise Missing("档案不存在。")
+
+    def _load(self, db: sqlite3.Connection, pid: str) -> tuple[sqlite3.Row, dict]:
+        row = db.execute("SELECT id, name, preset, created_at, state_json FROM profiles WHERE id = ?", (pid,)).fetchone()
         if not row:
-            raise Missing()
-        state=json.loads(row[0])
-        summary=db.execute("SELECT epoch,revision,data FROM summaries WHERE profile=?",(pid,)).fetchone()
-        state["conversation_summary"]=json.loads(summary["data"]) if summary and summary["epoch"]==state.get("context_epoch",0) else {}
-        state["summary_revision"]=summary["revision"] if summary and summary["epoch"]==state.get("context_epoch",0) else 0
-        return state
+            raise Missing("档案不存在。")
+        return row, json.loads(row["state_json"])
 
-    def save(self,db,pid,state):
-        db.execute("UPDATE profiles SET snapshot=? WHERE id=?",(dump(state),pid))
+    def _save(self, db: sqlite3.Connection, pid: str, state: dict) -> None:
+        db.execute("UPDATE profiles SET state_json = ? WHERE id = ?", (_dump(state), pid))
 
-    def state(self,family,pid):
-        with self.db() as db:
-            return runtime.public(self.load(db,family,pid))
+    def session_turns(self, pid: str, session_num: int | None = None, limit: int = 20) -> list[dict]:
+        with self._conn() as db:
+            row, state = self._load(db, pid)
+            s_num = session_num if session_num is not None else state["active_session"]["session_num"]
+            rows = db.execute(
+                """
+                SELECT id, session_num, turn_index, created_at, user_text, source,
+                       reply_id, reply_text, move, ui_cards_json, meta_json, focus_json,
+                       delivery_json, timing_json
+                FROM turns
+                WHERE profile_id = ? AND session_num = ?
+                ORDER BY turn_index ASC
+                """,
+                (pid, s_num),
+            ).fetchall()
+        out = []
+        for r in rows[-limit:]:
+            out.append({
+                "id": r["id"],
+                "session_num": r["session_num"],
+                "turn_index": r["turn_index"],
+                "created_at": r["created_at"],
+                "user_text": r["user_text"],
+                "source": r["source"],
+                "reply_id": r["reply_id"],
+                "reply_text": r["reply_text"],
+                "move": r["move"],
+                "ui_cards": json.loads(r["ui_cards_json"]),
+                "meta": json.loads(r["meta_json"]),
+                "focus": json.loads(r["focus_json"]),
+                "delivery": json.loads(r["delivery_json"]),
+                "timing": json.loads(r["timing_json"]),
+            })
+        return out
 
-    def event(self,family,pid,event):
-        started=time.monotonic()
-        digest=hashlib.sha256(dump(event).encode()).hexdigest()
-        def check(db):
-            state=self.load(db,family,pid)
-            if db.execute("SELECT 1 FROM cancellations WHERE profile=? AND turn=?",(pid,event["id"])).fetchone():
-                raise Conflict("本轮已取消。")
-            old=db.execute("SELECT digest FROM events WHERE profile=? AND id=?",(pid,event["id"])).fetchone()
-            if old and old[0]!=digest:
-                raise Conflict("事件编号已用于其他输入。")
-            if not old and state["revision"]!=event["revision"]:
-                raise Conflict("进度已更新，请重试。")
-            return state,bool(old)
-        with self.db() as db:
-            state,replayed=check(db)
-            if replayed:
-                return runtime.public(state),True
-            memory=[r[0] for r in db.execute("SELECT value FROM memories WHERE profile=? ORDER BY rowid DESC LIMIT 4",(pid,))]
-            learning=[json.loads(r[0]) for r in db.execute("SELECT record FROM observations WHERE profile=? ORDER BY rowid DESC LIMIT 4",(pid,))]
-        with self.history_lock:
-            now=time.monotonic()
-            self.history={k:v for k,v in self.history.items() if now-v[0]<900}
-            history=self.history.get(pid,(now,[]))[1]
-        # Keep unsummarized turns while the background worker is catching up.
-        # A slow summary must not create a gap between summary and recent text.
-        recent=[t for t in history if t.get("revision",0)>state.get("summary_revision",0) or t in history[-8:]]
-        with diagnostics.capture() as details:
-            decision=runtime.propose(state,event,memory,recent,learning,self.catalog)
-        brain_ms=diagnostics.elapsed(started)
-        with self.db() as db:
+    def recent_traces(self, pid: str, limit: int = 30) -> list[dict]:
+        with self._conn() as db:
+            self._load(db, pid)
+            rows = db.execute(
+                """
+                SELECT id, session_num, turn_index, created_at, user_text, source,
+                       reply_id, reply_text, move, ui_cards_json, meta_json, focus_json,
+                       delivery_json, timing_json
+                FROM turns
+                WHERE profile_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (pid, limit),
+            ).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "session_num": r["session_num"],
+                "turn_index": r["turn_index"],
+                "created_at": r["created_at"],
+                "user_text": r["user_text"],
+                "source": r["source"],
+                "reply_id": r["reply_id"],
+                "reply_text": r["reply_text"],
+                "move": r["move"],
+                "ui_cards": json.loads(r["ui_cards_json"]),
+                "meta": json.loads(r["meta_json"]),
+                "focus": json.loads(r["focus_json"]),
+                "delivery": json.loads(r["delivery_json"]),
+                "timing": json.loads(r["timing_json"]),
+            }
+            for r in rows
+        ]
+
+    def public_state(self, pid: str) -> dict:
+        with self._conn() as db:
+            row, state = self._load(db, pid)
+        session = state["active_session"]
+        progress = mastery.syllabus_progress(
+            self.curriculum,
+            state.get("mastery_ledger", {}),
+            state.get("personal_lexicon", []),
+        )
+        focus_preview = mastery.compute_session_focus(self.curriculum, deepcopy(state), "")
+        turns = self.session_turns(pid, session["session_num"], limit=30)
+
+        # Collect unlocked/practiced stars for the kid-facing Companion Screen ribbon
+        stars = []
+        for u in progress["units"]:
+            for t in u["targets"]:
+                if t["stage"] != "unseen":
+                    stars.append({
+                        "id": t["id"],
+                        "zh": t["zh"],
+                        "en": t["en"],
+                        "emoji": t["emoji"],
+                        "stage": t["stage"],
+                    })
+        for d in state.get("personal_lexicon", []):
+            stars.append({
+                "id": d["id"],
+                "zh": d["zh"],
+                "en": d["en"],
+                "emoji": d["emoji"],
+                "stage": d.get("stage", "exposed"),
+            })
+
+        return {
+            "profile": {
+                "id": row["id"],
+                "name": row["name"],
+                "preset": row["preset"],
+            },
+            "revision": state["revision"],
+            "language_mode": state.get("language_mode", "bilingual"),
+            "session": {
+                "id": session["id"],
+                "session_num": session["session_num"],
+                "turn_count": session["turn_count"],
+                "active_playlet": session.get("active_playlet"),
+                "ui_cards": session.get("ui_cards", []),
+                "reply": session["latest_reply"],
+            },
+            "stars": stars[-12:],
+            "history": [
+                {
+                    "turn_index": t["turn_index"],
+                    "user_text": t["user_text"],
+                    "reply_text": t["reply_text"],
+                    "move": t["move"],
+                }
+                for t in turns[-12:]
+            ],
+            "inspector": {
+                "focus": focus_preview,
+                "progress": progress,
+                "memory": deepcopy(state.get("memory", {})),
+            },
+        }
+
+    def cancel_turn(self, pid: str, turn_id: str) -> None:
+        with self._conn() as db:
             db.execute("BEGIN IMMEDIATE")
-            state,replayed=check(db)
-            if replayed:
-                return runtime.public(state),True
-            records=runtime.advance(state,event,self.catalog,decision)
-            planning.finalize(state,decision)
-            if decision[0] in {"refuse","help","meaning","pause","finish","language"}:
-                active=state["active"]
-                example=None
-                if decision[0] in {"help","meaning"} and active and active["hint"]:
-                    item=next(i for i in active["lesson"]["items"] if i["id"]==active["hint"]["item"])
-                    example=item["forms"][0] if decision[0]=="help" else item["zh"]
-                state["session_notes"]=(state.get("session_notes",[])+[{
-                    "revision":state["revision"],"action":decision[0],
-                    "lesson":(state["active"] or state["paused"] or {}).get("lesson",{}).get("id"),
-                    "reply_id":state["reply"]["id"],"demonstration":example,"delivery":"pending"}])[-12:]
-            for record in records:
-                record.update(source=event.get("source",event["type"]), confidence=event.get("confidence"), revision=state["revision"])
-                db.execute("INSERT INTO observations VALUES(?,?,?,?)",(pid,event["id"],int(time.time()),dump(record)))
-            self.save(db,pid,state)
-            db.execute("INSERT INTO events VALUES(?,?,?)",(pid,event["id"],digest))
-            trace={"revision":state["revision"],"action":decision[0],"brain_ms":brain_ms,"decision":details,
-                   "reply_id":state["reply"]["id"],"segments":len(state["reply"]["segments"])}
-            if os.getenv("SPARKY_DEBUG_TRANSCRIPTS")=="1":
-                trace.update(input=event.get("text",""),reply=state["reply"]["text"])
-            self._trace(db,pid,event["id"],trace)
-            if event["type"]=="utterance" and event.get("speaker","child")=="child" and event.get("confidence",1)>=0.55:
-                with self.history_lock:
-                    current=self.history.get(pid,(now,[]))[1]
-                    self.history[pid]=(time.monotonic(),(current+[{"revision":state["revision"],"user":event["text"],
-                        "reply":state["reply"]["text"],"reply_id":state["reply"]["id"],
-                        "care":bool(state.get("care_kind")),
-                        "delivery":"pending","segments":deepcopy(state["reply"]["segments"])}])[-32:])
-        self.schedule_summary(family,pid,state)
-        return runtime.public(state),False
+            self._load(db, pid)
+            db.execute(
+                "INSERT OR REPLACE INTO cancellations(profile_id, turn_id, created_at) VALUES(?, ?, ?)",
+                (pid, turn_id, time.time()),
+            )
+            db.execute(
+                """
+                DELETE FROM cancellations
+                WHERE profile_id = ? AND turn_id NOT IN (
+                    SELECT turn_id FROM cancellations WHERE profile_id = ? ORDER BY created_at DESC LIMIT 128
+                )
+                """,
+                (pid, pid),
+            )
 
-    def cancel(self,family,pid,turn):
-        with self.db() as db:
+    def ensure_not_cancelled(self, pid: str, turn_id: str) -> None:
+        with self._conn() as db:
+            self._load(db, pid)
+            if db.execute("SELECT 1 FROM cancellations WHERE profile_id = ? AND turn_id = ?", (pid, turn_id)).fetchone():
+                raise Conflict("本轮已打断取消。")
+
+    def prepare_turn_context(self, pid: str, turn_id: str, user_text: str) -> dict:
+        with self._conn() as db:
+            row, state = self._load(db, pid)
+            if db.execute("SELECT 1 FROM cancellations WHERE profile_id = ? AND turn_id = ?", (pid, turn_id)).fetchone():
+                raise Conflict("本轮已打断取消。")
+            existing = db.execute("SELECT id FROM turns WHERE id = ? AND profile_id = ?", (turn_id, pid)).fetchone()
+            if existing:
+                return {"duplicate": True, "public": self.public_state(pid)}
+
+        session_num = state["active_session"]["session_num"]
+        recent_turns = self.session_turns(pid, session_num, limit=10)
+        focus = mastery.compute_session_focus(self.curriculum, deepcopy(state), user_text)
+        return {
+            "duplicate": False,
+            "profile_name": row["name"],
+            "state_snapshot": state,
+            "focus": focus,
+            "memory": memory.context_snapshot(state.get("memory", {})),
+            "recent_turns": [
+                {
+                    "user": t["user_text"],
+                    "sparky": t["reply_text"],
+                    "move": t["move"],
+                    "delivery": t["delivery"].get("delivery", "complete"),
+                }
+                for t in recent_turns[-8:]
+            ],
+            "last_reply_delivery": state["active_session"]["latest_reply"],
+            "hotwords": self.curriculum.asr_hotwords(
+                focus["active_unit"]["id"],
+                [d["zh"] for d in state.get("personal_lexicon", [])],
+            ),
+        }
+
+    def commit_turn(
+        self,
+        pid: str,
+        turn_id: str,
+        user_text: str,
+        source: str,
+        reply_text: str,
+        meta: dict,
+        focus: dict,
+        timing: dict | None = None,
+    ) -> dict:
+        reply_id = _uid()
+        segs = segments.make_segments(reply_text)
+        with self._conn() as db:
             db.execute("BEGIN IMMEDIATE")
-            self.load(db,family,pid)
-            db.execute("INSERT OR REPLACE INTO cancellations VALUES(?,?,?)",(pid,turn,time.time()))
-            db.execute("DELETE FROM cancellations WHERE profile=? AND turn NOT IN (SELECT turn FROM cancellations WHERE profile=? ORDER BY created DESC LIMIT 128)",(pid,pid))
+            row, state = self._load(db, pid)
+            if db.execute("SELECT 1 FROM cancellations WHERE profile_id = ? AND turn_id = ?", (pid, turn_id)).fetchone():
+                raise Conflict("本轮已打断取消。")
+            existing = db.execute("SELECT id FROM turns WHERE id = ? AND profile_id = ?", (turn_id, pid)).fetchone()
+            if existing:
+                return self.public_state(pid)
 
-    def current_turn(self,family,pid,turn,reply=None):
-        with self.db() as db:
-            state=self.load(db,family,pid)
-            if db.execute("SELECT 1 FROM cancellations WHERE profile=? AND turn=?",(pid,turn)).fetchone():
-                raise Conflict("本轮已取消。")
-            if reply is not None and state["reply"]["id"]!=reply:
-                raise Conflict("回复已过期。")
-            return runtime.public(state)
+            ui_cards, applied_obs = mastery.apply_turn_result(
+                self.curriculum,
+                state,
+                reply_id=reply_id,
+                reply_text=reply_text,
+                segments=segs,
+                meta=meta,
+            )
+            added_facts = memory.apply_memory_notes(
+                state.setdefault("memory", memory.initial_memory()),
+                meta,
+                state["active_session"]["session_num"],
+            )
+            if state["memory"].get("child_name") and row["name"] in {"Leo", "小朋友", "New Kid"}:
+                db.execute("UPDATE profiles SET name = ? WHERE id = ?", (state["memory"]["child_name"], pid))
 
-    def delivery(self,family,pid,reply,status,attempt,segment=None):
-        with self.db() as db:
+            session = state["active_session"]
+            session["turn_count"] += 1
+            session["ui_cards"] = ui_cards
+            reply_obj = {
+                "id": reply_id,
+                "text": reply_text,
+                "delivery": "pending",
+                "segments": segs,
+            }
+            session["latest_reply"] = reply_obj
+            state["revision"] += 1
+
+            enriched_meta = {
+                **meta,
+                "applied_observations": applied_obs,
+                "added_facts": added_facts,
+            }
+            db.execute(
+                """
+                INSERT INTO turns(
+                    id, profile_id, session_num, turn_index, created_at,
+                    user_text, source, reply_id, reply_text, move,
+                    ui_cards_json, meta_json, focus_json, delivery_json, timing_json
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    turn_id,
+                    pid,
+                    session["session_num"],
+                    session["turn_count"],
+                    time.time(),
+                    user_text,
+                    source,
+                    reply_id,
+                    reply_text,
+                    str(meta.get("move") or "companionship_only"),
+                    _dump(ui_cards),
+                    _dump(enriched_meta),
+                    _dump(focus),
+                    _dump(reply_obj),
+                    _dump(timing or {}),
+                ),
+            )
+            self._save(db, pid, state)
+        return self.public_state(pid)
+
+    def record_delivery(self, pid: str, reply_id: str, status: str, segment: int | None = None) -> None:
+        if status not in {"started", "complete", "interrupted", "failed"}:
+            return
+        with self._conn() as db:
             db.execute("BEGIN IMMEDIATE")
-            state=self.load(db,family,pid)
-            current=state["reply"]
-            if current["id"]!=reply or current["delivery"]=="complete":
+            _, state = self._load(db, pid)
+            reply_obj = state["active_session"]["latest_reply"]
+            if reply_obj["id"] != reply_id:
                 return
-            segments.attach(current)
-            target=current
-            if segment is not None:
-                if type(segment) is not int or not 0<=segment<len(current["segments"]):
-                    raise ValueError("无效语音分句。")
-                target=current["segments"][segment]
-                if target["delivery"]=="complete":
-                    return
-            if status=="started":
-                # A piggybacked receipt and its background request may arrive twice.
-                if target.get("attempt")==attempt:
-                    return
-                target["attempt"]=attempt
-            elif status=="failed" and target["delivery"]=="pending":
-                target["attempt"]=attempt
-            elif target.get("attempt")!=attempt or target["delivery"]!="started":
+            if reply_obj["delivery"] == "complete":
                 return
-            target["delivery"]=status
+
+            segs = reply_obj.get("segments", [])
             if segment is None:
-                for part in current["segments"]:
-                    part["delivery"]=status
-            else:
-                phases=[s["delivery"] for s in current["segments"]]
-                current["delivery"]=("complete" if all(p=="complete" for p in phases) else
-                    "failed" if "failed" in phases else "interrupted" if "interrupted" in phases else "started")
-            for activity in (state["active"],state["paused"]):
-                if activity and activity["hint"] and activity["hint"]["id"]==reply:
-                    required=activity["hint"].get("segments",[])
-                    phases=[current["segments"][i]["delivery"] for i in required]
-                    activity["hint"]["delivery"]=("complete" if phases and all(p=="complete" for p in phases) else current["delivery"])
-            for note in state.get("session_notes",[]):
-                if note["reply_id"]==reply:
-                    taught=note.get("demonstration")
-                    parts=[p for p in current["segments"] if taught and taught in p["text"]]
-                    note["delivery"]="complete" if parts and all(p["delivery"]=="complete" for p in parts) else current["delivery"]
-            self.save(db,pid,state)
-            row=db.execute("SELECT turn FROM traces WHERE profile=? AND json_extract(data,'$.reply_id')=?",(pid,reply)).fetchone()
-            if row:
-                self._trace(db,pid,row["turn"],{"delivery":current["delivery"],"segment_delivery":[s["delivery"] for s in current["segments"]]})
-            with self.history_lock:
-                for turn in self.history.get(pid,(0,[]))[1]:
-                    if turn["reply_id"]==reply:
-                        turn.update(delivery=current["delivery"],segments=deepcopy(current["segments"]))
+                reply_obj["delivery"] = status
+                for s in segs:
+                    if s["delivery"] != "complete":
+                        s["delivery"] = status
+            elif 0 <= segment < len(segs):
+                if segs[segment]["delivery"] != "complete":
+                    segs[segment]["delivery"] = status
+                statuses = [s["delivery"] for s in segs]
+                if all(st == "complete" for st in statuses):
+                    reply_obj["delivery"] = "complete"
+                elif "interrupted" in statuses:
+                    reply_obj["delivery"] = "interrupted"
+                elif "failed" in statuses:
+                    reply_obj["delivery"] = "failed"
+                elif "started" in statuses:
+                    reply_obj["delivery"] = "started"
 
-    def parent(self,family,pid,op="summary",value=""):
-        with self.db() as db:
+            mastery.reconcile_delivery(self.curriculum, state, reply_id, reply_obj)
+            self._save(db, pid, state)
+            db.execute(
+                "UPDATE turns SET delivery_json = ? WHERE profile_id = ? AND reply_id = ?",
+                (_dump(reply_obj), pid, reply_id),
+            )
+
+    def update_timing(self, pid: str, turn_id: str, metrics: dict) -> None:
+        with self._conn() as db:
             db.execute("BEGIN IMMEDIATE")
-            state=self.load(db,family,pid)
-            if op in {"delete","forget","forget_context"}:
-                with self.history_lock:
-                    self.history.pop(pid,None)
-                runtime.say(state,language.wording(state,"We can keep playing or take a break.","我们可以继续玩，也可以休息。"))
-                state["context_epoch"]=state.get("context_epoch",0)+1
-                state["session_notes"]=[]
-                state["conversation_summary"]={}
-                db.execute("DELETE FROM summaries WHERE profile=?",(pid,))
-                db.execute("DELETE FROM traces WHERE profile=?",(pid,))
-            if op=="delete":
-                db.execute("DELETE FROM profiles WHERE id=?",(pid,))
-                return {}
-            if op=="remember":
-                db.execute("INSERT INTO memories VALUES(?,?,?)",(pid,runtime.uid(),value))
-            elif op=="forget":
-                db.execute("DELETE FROM memories WHERE profile=? AND id=?",(pid,value))
-            elif op=="learner":
-                state["learner"]=care.validate_learner(value)
-            if op in {"forget","remember","forget_context","learner"}:
-                # Invalidate an in-flight response based on a previous memory.
-                state["revision"]+=1
-                self.save(db,pid,state)
-            rows=db.execute("""SELECT json_extract(record,'$.label') AS goal,
-                    json_extract(record,'$.kind') AS kind, count(*) AS n
-                    FROM observations WHERE profile=? GROUP BY goal,kind ORDER BY goal,kind""",(pid,))
-            return {"learner":care.learner(state),"conversation_summary":state.get("conversation_summary",{}),
-                    "observations":[dict(r) for r in rows],"memories":[dict(r) for r in db.execute(
-                "SELECT id,value FROM memories WHERE profile=? ORDER BY rowid",(pid,))]}
-
-    def _trace(self,db,pid,turn,values):
-        old=db.execute("SELECT data FROM traces WHERE profile=? AND turn=?",(pid,turn)).fetchone()
-        data=json.loads(old[0]) if old else {}
-        data.update(values)
-        db.execute("INSERT INTO traces VALUES(?,?,?,?) ON CONFLICT(profile,turn) DO UPDATE SET data=excluded.data",
-                   (pid,turn,time.time(),dump(data)))
-        db.execute("DELETE FROM traces WHERE profile=? AND turn NOT IN (SELECT turn FROM traces WHERE profile=? ORDER BY created DESC LIMIT 100)",(pid,pid))
-
-    def trace(self,family,pid,turn,values):
-        with self.db() as db:
-            db.execute("BEGIN IMMEDIATE")
-            self.load(db,family,pid)
-            self._trace(db,pid,turn,values)
-
-    def debug(self,family,pid):
-        with self.db() as db:
-            state=self.load(db,family,pid)
-            rows=db.execute("SELECT turn,created,data FROM traces WHERE profile=? ORDER BY created DESC LIMIT 30",(pid,)).fetchall()
-        return {"turns":[{"turn":r["turn"],"created":r["created"],**json.loads(r["data"])} for r in rows],
-                "summary":state.get("conversation_summary",{}),"notes":state.get("session_notes",[]),
-                "transcripts":os.getenv("SPARKY_DEBUG_TRANSCRIPTS")=="1","prompt":brain.SYSTEM_PROMPT}
-
-    def schedule_summary(self,family,pid,state):
-        if not brain.configured() or self.closed or state.get("care_kind"):
-            return
-        with self.history_lock:
-            history=deepcopy(self.history.get(pid,(0,[]))[1])
-        # Checkpoint short conversations too, without putting summarization on
-        # the speaking path. Recent turns remain available until summary commits.
-        older=[t for t in history if t["revision"]>state.get("summary_revision",0) and not t.get("care")]
-        if len(older)<2:
-            return
-        job=(family,state.get("context_epoch",0),state.get("summary_revision",0),older,state.get("session_notes",[]))
-        with self.summary_lock:
-            if self.closed:
+            row = db.execute("SELECT timing_json FROM turns WHERE id = ? AND profile_id = ?", (turn_id, pid)).fetchone()
+            if not row:
                 return
-            self.summary_pending[pid]=job
-            if pid not in self.summary_running:
-                self.summary_running.add(pid)
-                self.summary_pool.submit(self._summarize,pid)
+            merged = {**json.loads(row["timing_json"]), **metrics}
+            db.execute("UPDATE turns SET timing_json = ? WHERE id = ?", (_dump(merged), turn_id))
 
-    def _summarize(self,pid):
-        while True:
-            with self.summary_lock:
-                job=self.summary_pending.pop(pid,None)
-                if job is None or self.closed:
-                    self.summary_running.discard(pid)
-                    return
-            family,epoch,_,older,notes=job
-            try:
-                with self.db() as db:
-                    state=self.load(db,family,pid)
-                if state.get("context_epoch",0)!=epoch:
-                    continue
-                base=state.get("summary_revision",0)
-                older=[t for t in older if t["revision"]>base]
-                if not older:
-                    continue
-                with diagnostics.capture() as details:
-                    summary=brain.summarize(state.get("conversation_summary",{}),older,notes)
-                with self.db() as db:
-                    db.execute("BEGIN IMMEDIATE")
-                    fresh=self.load(db,family,pid)
-                    if fresh.get("context_epoch",0)!=epoch or fresh.get("summary_revision",0)!=base:
-                        continue
-                    if summary:
-                        db.execute("INSERT OR REPLACE INTO summaries VALUES(?,?,?,?)",(pid,epoch,older[-1]["revision"],dump(summary)))
-                    self._trace(db,pid,"summary-"+str(older[-1]["revision"]),{"summary_status":"updated" if summary else "failed","decision":details})
-            except Missing:
-                continue
+    def start_next_session(
+        self,
+        pid: str,
+        summarizer: Callable[[int, list[dict], dict], dict | None] | None = None,
+        opening_generator: Callable[[dict, dict], tuple[str, list[str]]] | None = None,
+    ) -> dict:
+        """Archive current session into episodic memory and launch Session N+1."""
+        with self._conn() as db:
+            row, state = self._load(db, pid)
+        current_session_num = state["active_session"]["session_num"]
+        turns = self.session_turns(pid, current_session_num, limit=50)
 
-    def close(self):
-        with self.summary_lock:
-            self.closed=True
-            self.summary_pending.clear()
-        self.summary_pool.shutdown(wait=False,cancel_futures=True)
+        episode = None
+        if turns and summarizer:
+            episode = summarizer(current_session_num, turns, state.get("memory", {}))
+        if not episode:
+            episode = memory.fallback_consolidate_session(
+                current_session_num,
+                turns,
+                state.get("mastery_ledger", {}),
+                state.get("personal_lexicon", []),
+            )
 
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row, state = self._load(db, pid)
+            if turns:
+                memory.record_session_summary(state.setdefault("memory", memory.initial_memory()), episode)
+
+            next_num = state["active_session"]["session_num"] + 1
+            preview_state = deepcopy(state)
+            preview_state["active_session"] = _new_session_state(next_num, "")
+            next_focus = mastery.compute_session_focus(self.curriculum, preview_state, "")
+
+            opening_text = ""
+            card_ids: list[str] = []
+            if opening_generator:
+                opening_text, card_ids = opening_generator(
+                    memory.context_snapshot(state.get("memory", {})),
+                    next_focus,
+                )
+            if not opening_text:
+                opening_text, card_ids = self._fallback_next_opening(row["name"], state, next_focus)
+
+            cards = [c for cid in card_ids[:2] if (c := self.curriculum.card_for(cid))]
+            state["active_session"] = _new_session_state(next_num, opening_text, cards)
+            state["revision"] += 1
+            self._save(db, pid, state)
+
+        return self.public_state(pid)
+
+    def _fallback_next_opening(self, fallback_name: str, state: dict, next_focus: dict) -> tuple[str, list[str]]:
+        mem = state.get("memory", {})
+        name = mem.get("child_name") or fallback_name
+        snowball = next_focus.get("snowball_familiar_bank", [])
+        greet_zh = "你好" if any(s["zh"].startswith("你好") for s in snowball) else None
+        episodes = mem.get("episodic_summaries", [])
+        last_highlight = episodes[-1]["highlights"][0] if episodes and episodes[-1].get("highlights") else None
+
+        prefix = f"{greet_zh}, {name}! " if greet_zh else f"Hey {name}, welcome back! "
+        if last_highlight:
+            body = f"I still remember what you shared last time ({last_highlight[:55]})! What's new with you today?"
+        else:
+            body = "So happy to hang out again! What fun thing happened today?"
+        cards = ["voc_nihao"] if greet_zh else []
+        return prefix + body, cards
+
+    def mutate_memory(self, pid: str, op: str, value: str = "") -> dict:
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            _, state = self._load(db, pid)
+            mem = state.setdefault("memory", memory.initial_memory())
+            if op == "add_fact" and value.strip():
+                memory.apply_memory_notes(mem, {"memory_notes": [value.strip()]}, state["active_session"]["session_num"])
+            elif op == "remove_fact":
+                mem["facts"] = [f for f in mem.get("facts", []) if f["id"] != value]
+            elif op == "set_language" and value in {"bilingual", "english", "chinese"}:
+                state["language_mode"] = value
+            state["revision"] += 1
+            self._save(db, pid, state)
+        return self.public_state(pid)

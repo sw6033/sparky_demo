@@ -1,39 +1,43 @@
-"""Sentence boundaries outside quoted teaching examples; no text rewriting."""
-def cost(text):
-    return sum(3 if '\u3400'<=char<='\u9fff' else 1 for char in text)
+"""Split spoken reply into natural TTS sentence chunks without breaking Chinese quotes."""
+from __future__ import annotations
 
-def split(text):
-    parts=[]
-    start=0
-    quoted=False
-    for i,char in enumerate(text):
-        if char in '"“”「」':
-            quoted=not quoted
-        if quoted or char not in '.!?。！？':
-            continue
-        if char=='.' and i and i+1<len(text) and text[i-1].isdigit() and text[i+1].isdigit():
-            continue
-        if char in '.!?' and i+1<len(text) and not text[i+1].isspace():
-            continue
-        part=text[start:i+1].strip()
-        if part:
-            parts.append(part)
-        start=i+1
-        if len(parts)==5:
-            break
-    if text[start:].strip():
-        parts.append(text[start:].strip())
-    # A standalone "Okay!" is too short to hide preparation of the next sentence.
-    # Join complete sentences only; quoted examples are never split or rewritten.
-    if cost(text)>160 and len(parts)>1 and cost(parts[0])<=12 and cost(parts[0]+parts[1])<=160:
-        parts[:2]=[parts[0]+" "+parts[1]]
-    return [{"index":i,"text":part,"delivery":"pending"} for i,part in enumerate(parts)]
 
-def attach(reply):
-    if not reply.get("segments"):
-        reply["segments"]=split(reply["text"])
-    # Small replies avoid a separate connection/validation wait for each sentence.
-    # Keep sentence receipts; a whole-clip interruption conservatively marks all
-    # sentences interrupted because we have no verified word-level playhead.
-    reply["speech_mode"]="whole" if cost(reply["text"])<=160 else "sentences"
-    return reply
+def weighted_len(text: str) -> int:
+    return sum(3 if "\u3400" <= ch <= "\u9fff" else 1 for ch in text)
+
+
+def split_sentences(text: str) -> list[str]:
+    text = (text or "").strip()
+    if not text:
+        return []
+    parts: list[str] = []
+    start = 0
+    in_quote = False
+    for idx, ch in enumerate(text):
+        if ch in '"“”「」『』':
+            in_quote = not in_quote
+        if in_quote or ch not in ".!?。！？":
+            continue
+        if ch == "." and idx > 0 and idx + 1 < len(text) and text[idx - 1].isdigit() and text[idx + 1].isdigit():
+            continue
+        if ch in ".!?" and idx + 1 < len(text) and not text[idx + 1].isspace():
+            continue
+        chunk = text[start : idx + 1].strip()
+        if chunk:
+            parts.append(chunk)
+        start = idx + 1
+    tail = text[start:].strip()
+    if tail:
+        parts.append(tail)
+
+    # Merge ultra-short opener like "Hey!" or "Ooh!" with the next sentence so TTS prosody flows naturally.
+    if len(parts) > 1 and weighted_len(parts[0]) <= 16:
+        parts[:2] = [f"{parts[0]} {parts[1]}".strip()]
+    return parts
+
+
+def make_segments(text: str) -> list[dict]:
+    return [
+        {"index": idx, "text": part, "delivery": "pending"}
+        for idx, part in enumerate(split_sentences(text))
+    ]

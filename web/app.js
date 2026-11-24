@@ -1,276 +1,702 @@
 "use strict";
-const $ = id => document.getElementById(id);
-const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-const synth = window.speechSynthesis;
-let home, profile, state, recognition, playback, busy = false, ready = false;
-let voice = Boolean(Recognition), quietTurns = 0, listenTimer, pendingReceipt = Promise.resolve();
-let liveCall, creatingProfile, turnQueue = Promise.resolve();
-let resumeLive = false;
-let cascade;
-let resyncAfterCancel=false;
-const cascadeReceipts=[];
-const status = message => { $("status").textContent = message; };
 
-async function api(path, body, signal) {
-  const options = body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)} : {};
-  const response = await fetch(path, {...options,signal});
-  const data = await response.json();
-  if (!response.ok) throw Object.assign(new Error(data.error || "请稍后再试。"), {code:response.status});
+const $ = id => document.getElementById(id);
+
+let appData = {
+  profiles: [],
+  state: null,
+  traces: [],
+  curriculum: null,
+  capabilities: {},
+};
+let activeAbort = null;
+let activeTurnId = null;
+let pendingReceipts = [];
+
+const status = msg => {
+  $("statusLine").textContent = msg || "";
+};
+
+async function apiJson(path, body, signal) {
+  const opts = body
+    ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal }
+    : { signal };
+  const res = await fetch(path, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "请求失败");
   return data;
 }
-function render() {
-  $("title").textContent = state?.active?.title || (state?.paused ? "接着上次聊" : "今天想聊什么？");
-  $("reply").textContent = state?.reply?.text || "Hi, I'm Sparky! What would you like to do today?";
+
+function setStageVisual(mode, labelText) {
+  $("companionStage").dataset.state = mode;
+  const labels = {
+    idle: "Ready to hang out",
+    listening: "Listening to you…",
+    thinking: "Sparky is thinking…",
+    speaking: "Sparky is talking…",
+  };
+  $("stateLabel").textContent = labelText || labels[mode] || "Ready";
 }
-async function ensureProfile() {
-  if (profile) return;
-  if (home.pin) throw new Error("请家长先在家长空间创建档案。");
-  if (!creatingProfile) creatingProfile=(async()=>{
-    const created = await api("/api/profile", {name:home.live?"成人语音测试":"小朋友"});
-    const snapshot = await api("/api/state/"+created.id);
-    profile = created.id;
-    localStorage.setItem("sparky.profile", profile);
-    state = snapshot;
-  })().finally(()=>{creatingProfile=null;});
-  await creatingProfile;
-}
-function courseTurn(text, source, confidence, id=crypto.randomUUID(), isCurrent=()=>true, signal) {
-  const next = turnQueue.then(async () => {
-    await pendingReceipt;
-    if (!isCurrent()) throw new DOMException("本轮已取消。","AbortError");
-    await ensureProfile();
-    if (!isCurrent()) throw new DOMException("本轮已取消。","AbortError");
-    if(resyncAfterCancel){state=await api("/api/state/"+profile,undefined,signal);resyncAfterCancel=false;}
-    const event={id,revision:state.revision,type:"utterance",text,source,confidence};
-    const send=()=>api("/api/event",{profile,event},signal);
-    let result;
-    try { result=await send(); } catch(err) {
-      if(err.name==="AbortError" || !isCurrent())throw err;
-      if(err.code===409) {state=await api("/api/state/"+profile);render();}
-      if(err.code) throw err;
-      result=await send();
+
+function renderHighlightedBubble(text) {
+  const container = $("replyBubble");
+  container.replaceChildren();
+  const content = text || "Hey! What would you like to chat about today?";
+  // Highlight contiguous Chinese character phrases (including middle punctuation like '，' inside short Chinese spans)
+  const regex = /([\u3400-\u9fff]+(?:[，、][\u3400-\u9fff]+)*)/gu;
+  let last = 0;
+  for (const match of content.matchAll(regex)) {
+    if (match.index > last) {
+      container.append(document.createTextNode(content.slice(last, match.index)));
     }
-    if (!isCurrent()) throw new DOMException("本轮已取消。","AbortError");
-    state=result.state;
-    render();
-    return result;
-  });
-  turnQueue=next.catch(()=>{});
-  return next;
+    const chip = document.createElement("span");
+    chip.className = "zh-chip";
+    chip.textContent = match[0];
+    container.append(chip);
+    last = match.index + match[0].length;
+  }
+  if (last < content.length) {
+    container.append(document.createTextNode(content.slice(last)));
+  }
 }
-async function startLive() {
-  if (liveCall || document.hidden) return;
-  voice=false;
-  const call = new LiveVoice({
-    greeting:()=>state?.revision ? state.reply.text : "嗨，我是 Sparky！你今天想做什么呀？",
-    isLessonRequest:text=>{
-      const phrase=text.replace(/[\s，。！？,.!?]/gu,"").replace(/^(?:我想|我要|我们来|想)/u,"");
-      return !state?.active && !state?.paused && home.lessons.some(l=>l.entry_phrases?.includes(phrase));
-    },
-    status, negotiate:sdp=>api("/api/live",{profile,sdp}),
-    coursework:async (text,id)=>(await courseTurn(text,"voice",undefined,id)).state.reply.text,
-    heard:text=>{$("heard").textContent="你说「"+text+"」";},
-    caption:text=>{$("reply").textContent=text;},
-    stopped:message=>{
-      if(liveCall!==call)return;
-      liveCall=null;
-      status(message+" 可打字，或输入「开启语音」重连。");
+
+function renderCompanionScreen() {
+  const state = appData.state;
+  if (!state) return;
+
+  $("sessionBadge").textContent = `Session ${state.session.session_num} · ${state.profile.name}`;
+  const voiceTag = appData.capabilities.voice_enabled ? "OpenAI Cascade" : "Offline Demo";
+  $("modeBadge").textContent = `${voiceTag} (${appData.capabilities.model || "local"})`;
+
+  renderHighlightedBubble(state.session.reply?.text);
+
+  // Active Playlet Banner
+  const playlet = state.session.active_playlet;
+  if (playlet) {
+    $("playletBanner").hidden = false;
+    $("playletTitle").textContent = `🎲 ${playlet.title}`;
+  } else {
+    $("playletBanner").hidden = true;
+  }
+
+  // Controllable Floating Visual Cards (形态 A)
+  const cards = state.session.ui_cards || [];
+  const tray = $("cardTray");
+  tray.replaceChildren();
+  $("cardsArea").hidden = cards.length === 0;
+  for (const card of cards) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "vocab-card";
+    const speakSample = card.example || card.zh.replace(/…/g, "");
+    btn.onclick = () => sendTurn(speakSample, false);
+
+    const top = document.createElement("div");
+    top.className = "card-top";
+    const em = document.createElement("span");
+    em.className = "emoji";
+    em.textContent = card.emoji || "✨";
+    const titles = document.createElement("div");
+    const zh = document.createElement("div");
+    zh.className = "zh";
+    zh.textContent = card.zh;
+    const py = document.createElement("div");
+    py.className = "pinyin";
+    py.textContent = card.pinyin;
+    titles.append(zh, py);
+    top.append(em, titles);
+
+    const en = document.createElement("div");
+    en.className = "en";
+    en.textContent = card.en;
+    btn.append(top, en);
+
+    if (card.hook) {
+      const hook = document.createElement("div");
+      hook.className = "hook";
+      hook.textContent = card.hook;
+      btn.append(hook);
     }
-  });
-  liveCall=call;
-  status("正在连接 GPT-Live，请允许浏览器使用麦克风。");
-  try {
-    await ensureProfile();
-    if(!call.closed) await call.start();
-  } catch(err) {
-    const reasons={NotAllowedError:"这个页面没有麦克风权限。请允许麦克风；如果内置浏览器没有权限入口，可用 Chrome 打开同一地址。",
-      NotFoundError:"没有找到麦克风，请检查系统的声音输入设备。",
-      NotReadableError:"麦克风暂时无法采音，请检查系统声音输入。"};
-    const reason=reasons[err.name] || err.message;
-    call.stop(reason || "无法连接语音。");
+    tray.append(btn);
+  }
+
+  // Collectible Chinese Stars Strip
+  const stars = state.stars || [];
+  $("starsBar").hidden = stars.length === 0;
+  const starList = $("starList");
+  starList.replaceChildren();
+  for (const st of stars) {
+    const pill = document.createElement("span");
+    pill.className = "star-pill";
+    pill.dataset.stage = st.stage;
+    pill.title = `${st.en} (${st.stage})`;
+    pill.textContent = `${st.emoji} ${st.zh}`;
+    starList.append(pill);
   }
 }
-function receipt(p, phase) {
-  if (!p.id || !p.profile) return;
-  if(cascade){
-    cascadeReceipts.push({profile:p.profile,reply:p.id,attempt:p.attempt,status:phase,segment:p.segment});
-    if(cascadeReceipts.length>128)cascadeReceipts.splice(0,cascadeReceipts.length-128);
+
+function renderInspector() {
+  const state = appData.state;
+  if (!state) return;
+
+  // 1. Profiles
+  const sel = $("profileSelect");
+  sel.replaceChildren();
+  for (const p of appData.profiles) {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = `${p.name} (Session ${p.session_num})`;
+    opt.selected = p.id === state.profile.id;
+    sel.append(opt);
   }
-  pendingReceipt = pendingReceipt.then(() => api("/api/delivery", {
-    profile:p.profile, reply:p.id, attempt:p.attempt, status:phase, segment:p.segment
-  })).catch(()=>{});
-}
-function stopListening() {
-  clearTimeout(listenTimer);
-  const old = recognition;
-  recognition = null;
-  if (old) old.abort();
-}
-function stopSpeaking() {
-  if (!playback) return;
-  const old = playback;
-  playback = null;
-  clearTimeout(old.timeout);
-  synth.cancel();
-  receipt(old, "interrupted");
-}
-function listenSoon(delay=150) {
-  clearTimeout(listenTimer);
-  if (voice && ready && !document.hidden) listenTimer=setTimeout(listen, delay);
-}
-function speakReply() {
-  if (!synth || !voice || document.hidden) { listenSoon(); return; }
-  stopListening();
-  stopSpeaking();
-  const utterance = new SpeechSynthesisUtterance($("reply").textContent);
-  utterance.lang = "zh-CN"; utterance.rate = 0.86;
-  const p = {id:state?.reply.id, profile, attempt:crypto.randomUUID(), utterance};
-  playback = p;
-  function done(phase) {
-    if (p!==playback) return;
-    clearTimeout(p.timeout);
-    playback = null;
-    receipt(p,phase);
-    listenSoon();
+  $("langModeSelect").value = state.language_mode || "bilingual";
+
+  // 2. SessionFocus
+  const focus = state.inspector?.focus || {};
+  const targetsTxt = (focus.primary_targets || [])
+    .map(t => `${t.emoji} ${t.zh} [${t.current_stage} → ${(t.allowed_moves || []).join("/")}]`)
+    .join(" · ") || "当前轮仅纯陪伴倾听";
+  const snowballTxt = (focus.snowball_familiar_bank || []).map(s => s.zh).join("、") || "暂无熟词";
+  const focusBox = $("focusSummary");
+  focusBox.replaceChildren();
+  for (const line of [
+    `节奏档位: ${focus.rhythm_mode || "—"}`,
+    `当前主攻单元: ${focus.active_unit?.title || "—"}`,
+    `本轮候选目标: ${targetsTxt}`,
+    `滚雪球熟词池: ${snowballTxt}`,
+  ]) {
+    const d = document.createElement("div");
+    d.textContent = line;
+    focusBox.append(d);
   }
-  // Some browsers silently block autoplay. Never leave the microphone waiting on it.
-  p.timeout = setTimeout(()=>{if (p===playback){stopSpeaking(); listenSoon();}},2200);
-  utterance.onstart=()=>{
-    if (p!==playback) return;
-    clearTimeout(p.timeout);
-    p.timeout=setTimeout(()=>{if(p===playback){stopSpeaking();listenSoon();}},45000);
-    receipt(p,"started"); status("Sparky 正在说话…");
-  };
-  utterance.onend=()=>done("complete");
-  utterance.onerror=()=>done("interrupted");
-  synth.speak(utterance);
-}
-function listen() {
-  if (!Recognition || !voice || !ready || busy || playback || recognition || document.hidden) return;
-  const rec=new Recognition();
-  recognition=rec;
-  rec.lang="zh-CN"; rec.interimResults=true; rec.continuous=false;
-  rec.onstart=()=>{if(rec===recognition)status("正在听，可以直接说话。");};
-  rec.onresult=e=>{
-    if(rec!==recognition)return;
-    const result=e.results[e.results.length-1], heard=result[0];
-    if(!heard.transcript.trim())return;
-    status("听到「"+heard.transcript+"」");
-    if(result.isFinal) submit(heard.transcript,"voice",Number.isFinite(heard.confidence)?heard.confidence:0.5);
-  };
-  rec.onerror=e=>{
-    if(rec!==recognition || e.error==="no-speech")return;
-    voice=false;
-    stopListening();
-    const reasons={"not-allowed":"浏览器尚未允许麦克风。","service-not-allowed":"当前浏览器未启用语音识别服务。","audio-capture":"没有检测到麦克风。","network":"浏览器连不上语音识别服务。"};
-    status((reasons[e.error] || "语音暂时不可用。")+"可打字并按回车；输入「开启语音」可重试。");
-  };
-  rec.onend=()=>{
-    if(rec!==recognition)return;
-    recognition=null;
-    if(++quietTurns>=3){voice=false;status("麦克风已休息。输入「开启语音」可继续，也可以打字。");}
-    else listenSoon(500);
-  };
-  try {rec.start();} catch {recognition=null;voice=false;status("输入「开启语音」可启用麦克风，也可以直接打字。");}
-}
-async function submit(raw,source,confidence=1) {
-  const text=raw.trim();
-  if (ready && cascade && text) {
-    if (/^(开启语音|打开麦克风|开始语音)[。！!]?$/u.test(text)) return cascade.start();
-    if (/^(关闭语音|关闭麦克风)[。！!]?$/u.test(text)) return cascade.stop("麦克风已关闭。");
-    return cascade.text(text);
+
+  // 3. Syllabus & Mastery Map
+  const prog = state.inspector?.progress || { units: [] };
+  const tree = $("syllabusTree");
+  tree.replaceChildren();
+  for (const u of prog.units) {
+    const box = document.createElement("div");
+    box.className = "unit-block" + (u.active ? " active" : "");
+    const title = document.createElement("div");
+    title.className = "unit-title";
+    const statusBadge = u.completed ? "✅ 已通关" : u.active ? "🎯 主攻中" : u.unlocked ? "🔓 已解锁" : "🔒 待解锁";
+    title.innerHTML = `<span>${u.order}. ${u.title_zh}</span><span>${statusBadge}</span>`;
+    const chips = document.createElement("div");
+    chips.className = "target-chips";
+    for (const t of u.targets) {
+      const ch = document.createElement("span");
+      ch.className = "t-chip";
+      ch.dataset.stage = t.stage;
+      ch.textContent = `${t.emoji}${t.zh} (${t.stage})`;
+      chips.append(ch);
+    }
+    box.append(title, chips);
+    tree.append(box);
   }
-  if(!ready || busy || !text)return;
-  if(/^(开启语音|打开麦克风|开始语音)[。！!]?$/u.test(text)){
-    if(home.live){await startLive();return;}
-    if(!Recognition){status("当前浏览器不支持语音识别，可打字并按回车。");return;}
-    voice=true;quietTurns=0;stopSpeaking();listen();return;
+  if (prog.personal_lexicon?.length) {
+    const pBox = document.createElement("div");
+    pBox.className = "unit-block";
+    const pt = document.createElement("div");
+    pt.className = "unit-title";
+    pt.textContent = "✨ 动态生成的孩子个人兴趣词库";
+    const chips = document.createElement("div");
+    chips.className = "target-chips";
+    for (const d of prog.personal_lexicon) {
+      const ch = document.createElement("span");
+      ch.className = "t-chip";
+      ch.dataset.stage = d.stage;
+      ch.textContent = `${d.emoji}${d.zh} · ${d.en} (${d.stage})`;
+      chips.append(ch);
+    }
+    pBox.append(pt, chips);
+    tree.append(pBox);
   }
-  if(/^(关闭语音|关闭麦克风)[。！!]?$/u.test(text)){
-    liveCall?.stop("麦克风已关闭。");
-    voice=false;stopListening();stopSpeaking();status("麦克风已关闭。");return;
+
+  // 4. Memory
+  const mem = state.inspector?.memory || {};
+  const memBox = $("memoryBox");
+  memBox.replaceChildren();
+  const nameLine = document.createElement("div");
+  nameLine.textContent = `识别到的称呼: ${mem.child_name || "尚未告知"}`;
+  memBox.append(nameLine);
+  for (const f of mem.facts || []) {
+    const row = document.createElement("div");
+    row.className = "fact-row";
+    const sp = document.createElement("span");
+    sp.textContent = `• ${f.text} (S${f.session})`;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "mini-link";
+    del.textContent = "×";
+    del.onclick = async () => {
+      const res = await apiJson("/api/memory", { profile: state.profile.id, op: "remove_fact", value: f.id });
+      appData.state = res.state;
+      renderAll();
+    };
+    row.append(sp, del);
+    memBox.append(row);
   }
-  busy=true;quietTurns=0;stopListening();stopSpeaking();
-  $("heard").textContent="你说「"+text+"」";
-  status("Sparky 正在想…");
-  try{
-    const result=await courseTurn(text,source,confidence);
-    status("");busy=false;
-    if(liveCall)liveCall.send("session.commentary.append",state.reply.text);
-    else if(voice && !result.duplicate)speakReply();else listenSoon();
-  }catch(err){
-    status(err.message);busy=false;
-  }finally{busy=false;}
+  for (const ep of mem.episodic_summaries || []) {
+    const epDiv = document.createElement("div");
+    epDiv.style.fontSize = "12px";
+    epDiv.style.color = "#536960";
+    epDiv.textContent = `📖 S${ep.session_num} 归档: ${ep.summary}`;
+    memBox.append(epDiv);
+  }
+
+  // 5. Turn Traces
+  const traceList = $("traceList");
+  traceList.replaceChildren();
+  for (const tr of (appData.traces || []).slice(0, 12)) {
+    const det = document.createElement("details");
+    const sum = document.createElement("summary");
+    const t = tr.timing || {};
+    const firstAudio = t.client_first_audio_ms ?? t.server_first_pcm_ms ?? "—";
+    sum.textContent = `S${tr.session_num}#${tr.turn_index} · ${tr.move} · 大脑 ${t.brain_ms ?? "—"}ms · 首音 ${firstAudio}ms`;
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(
+      {
+        child: tr.user_text,
+        sparky: tr.reply_text,
+        observations: tr.meta?.applied_observations,
+        delivery: tr.delivery?.delivery,
+        timing: tr.timing,
+      },
+      null,
+      2
+    );
+    det.append(sum, pre);
+    traceList.append(det);
+  }
 }
-$("chat").onsubmit=e=>{e.preventDefault();if(!busy && ready){const text=$("input").value;$("input").value="";submit(text,"text");}};
-function suspend(){cascade?.stop("语音已暂停，返回后点击「开始说话」。");resumeLive=Boolean(liveCall)||resumeLive;liveCall?.stop("语音已暂停。");stopListening();stopSpeaking();}
-function resume(){
-  if(home?.live && ready && resumeLive && !document.hidden){resumeLive=false;startLive();}
-  else listenSoon();
+
+function renderAll() {
+  renderCompanionScreen();
+  renderInspector();
+  updateMicButton();
 }
-document.addEventListener("visibilitychange",()=>{if(document.hidden)suspend();else resume();});
-window.addEventListener("pageshow",resume);
-window.addEventListener("pagehide",suspend);
-(async()=>{
-  home=await api("/api/home");
-  $("mode").textContent=home.cascade?"Cascade · ASR → C → TTS":home.live?"成人模拟测试 · GPT-Live":home.model?"已配置对话模型":"本地课程模式";
-  const saved=localStorage.getItem("sparky.profile");
-  profile=(home.profiles.find(p=>p.id===saved)||home.profiles[0])?.id;
-  if(profile)state=await api("/api/state/"+profile);
-  ready=true;render();
-  if (home.cascade) {
-    voice=false;
-    async function speechRequest(path, data, signal) {
-      await ensureProfile();
-      const response=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({profile,...data}),signal});
-      if (!response.ok){
-        let message="语音连接暂时不稳定，请重试。";
-        try{message=(await response.json()).error||message;}catch{}
-        throw Object.assign(new Error(message),{code:response.status});
+
+const player = new PcmStreamPlayer({
+  onSpeakingChange: speaking => {
+    if (!speaking) {
+      document.documentElement.style.setProperty("--mouth-open", "0px");
+      if (voice.active) {
+        setStageVisual("listening");
+        voice.setProcessing(false);
+      } else {
+        setStageVisual("idle");
       }
-      return response;
+    } else {
+      setStageVisual("speaking");
     }
-    function cascadeTurn(input,signal,turn,onRecord,isCurrent){
-      const queuedAt=Date.now();
-      const next=turnQueue.then(async()=>{
-        await ensureProfile();
-        if(!isCurrent())throw new DOMException("本轮已取消。","AbortError");
-        if(resyncAfterCancel){state=await api("/api/state/"+profile,undefined,signal);resyncAfterCancel=false;}
-        onRecord({type:"queue",ms:Date.now()-queuedAt});
-        const receipts=cascadeReceipts.filter(r=>r.profile===profile && r.reply===state.reply.id).map(({profile,...r})=>r);
-        try{
-          const response=await speechRequest("/api/cascade",{...input,turn,revision:state.revision,receipts},signal);
-          return await readCascade(response,event=>{
-            if(!isCurrent())throw new DOMException("本轮已取消。","AbortError");
-            if(event.type==="state"){state=event.state;render();}
-            onRecord(event);
-          });
-        }catch(error){if(error.code===409)resyncAfterCancel=true;throw error;}
-      });
-      turnQueue=next.catch(()=>{});return next;
+    updateMicButton();
+  },
+  onLevel: level => {
+    document.documentElement.style.setProperty("--mouth-open", `${Math.round(level * 14)}px`);
+    document.documentElement.style.setProperty("--energy-scale", (1 + level * 0.25).toFixed(2));
+  },
+  onSegmentReceipt: (replyId, segment, phase) => {
+    const pid = appData.state?.profile?.id;
+    if (!pid || !replyId) return;
+    pendingReceipts.push({ reply: replyId, segment, status: phase });
+    apiJson("/api/delivery", { profile: pid, reply: replyId, segment, status: phase }).catch(() => {});
+  },
+});
+
+const voice = new VoiceController({
+  player,
+  onUtterance: async (audioB64, media, vadMs) => {
+    await sendTurn({ audio: audioB64, media, vadMs }, true);
+  },
+  onBargeIn: () => {
+    cancelInFlightTurn();
+    status("检测到你开口，已立即打断 Sparky 并继续听你说…");
+  },
+  onMicLevel: level => {
+    if (!player.speaking) {
+      document.documentElement.style.setProperty("--energy-scale", (1 + level * 0.28).toFixed(2));
     }
-    cascade=new CascadeVoice({
-      pipeline:cascadeTurn,
-      transcribe:async(audio,media,signal,turn)=>(await speechRequest("/api/transcribe",{audio,media,turn},signal)).json(),
-      speech:async(reply,signal,segment,turn)=>(await speechRequest("/api/speech",{reply,segment,turn},signal)).blob(),
-      turn:(text,source,isCurrent,turn,signal)=>courseTurn(text,source,undefined,turn,isCurrent,signal),
-      cancel:turn=>{resyncAfterCancel=true;return profile?api("/api/cancel",{profile,turn}):Promise.resolve();},
-      metrics:(turn,metrics)=>api("/api/metrics",{profile,turn,metrics}).catch(()=>{}),
-      delivery:(playback,phase)=>receipt({...playback,profile},phase),
-      status, heard:text=>{$("heard").textContent="你说「"+text+"」";},
-      changed:recording=>{$("record").textContent=recording?"说完了":"开始说话";}
-    });
-    $("cascadeControls").hidden=false;
-    $("continuous").onchange=()=>{cascade.continuous=$("continuous").checked;};
-    $("pauseLength").onchange=()=>{cascade.silenceMs=Number($("pauseLength").value);};
-    $("record").onclick=()=>cascade.recording?cascade.finish():cascade.start();
-    $("interrupt").onclick=()=>cascade.start();
-    $("stopVoice").onclick=()=>cascade.stop();
-    status("点击「开始说话」开启录音，也可以打字。先用成人模拟语音测试。");
+  },
+  onStateChange: st => {
+    if (!player.speaking) setStageVisual(st);
+    updateMicButton();
+  },
+  onError: err => {
+    status(err.message || "麦克风状态异常。");
+    updateMicButton();
+  },
+});
+
+function updateMicButton() {
+  const btn = $("micBtn");
+  if (!appData.capabilities.voice_enabled) {
+    btn.textContent = "🎙 未配置 OpenAI Key (当前可用文字体验)";
+    btn.disabled = true;
     return;
   }
-  if(home.live){resumeLive=document.hidden;await startLive();}
-  else if(voice){status("允许浏览器使用麦克风后，就可以直接和 Sparky 说话。");speakReply();}
-  else status("当前浏览器可用文字对话，按回车发送。");
-})().catch(e=>status("小屋暂时无法打开。"+e.message));
+  btn.disabled = false;
+  if (player.speaking && voice.active) {
+    btn.textContent = "✋ 打断并说话";
+    btn.classList.add("active");
+  } else if (voice.active) {
+    btn.textContent = voice.handsFree ? "⏹ 停止语音监听" : "✅ 说完了（点击发送）";
+    btn.classList.add("active");
+  } else {
+    btn.textContent = voice.handsFree ? "🎙 开启连续语音对话" : "🎙 点击开始说话";
+    btn.classList.remove("active");
+  }
+}
+
+function cancelInFlightTurn() {
+  player.stop(true);
+  if (activeAbort) {
+    activeAbort.abort();
+    activeAbort = null;
+  }
+  if (activeTurnId && appData.state?.profile?.id) {
+    const tid = activeTurnId;
+    activeTurnId = null;
+    apiJson("/api/cancel", { profile: appData.state.profile.id, turn: tid }).catch(() => {});
+  }
+}
+
+async function refreshTraces() {
+  const pid = appData.state?.profile?.id;
+  if (!pid) return;
+  try {
+    const res = await apiJson(`/api/state/${pid}`);
+    appData.state = res.state;
+    appData.traces = res.traces;
+    renderAll();
+  } catch {}
+}
+
+async function sendTurn(input, isAudioPayload = false) {
+  const pid = appData.state?.profile?.id;
+  if (!pid) return;
+  cancelInFlightTurn();
+
+  const turnId = crypto.randomUUID();
+  activeTurnId = turnId;
+  const abortCtrl = new AbortController();
+  activeAbort = abortCtrl;
+  voice.setProcessing(true);
+
+  const startedAt = performance.now();
+  let firstAudioRecorded = false;
+  let streamingSentences = [];
+  const receipts = pendingReceipts.splice(0, pendingReceipts.length);
+
+  const payload = {
+    profile: pid,
+    turn: turnId,
+    want_audio: Boolean(appData.capabilities.voice_enabled),
+    receipts,
+    ...(isAudioPayload ? { audio: input.audio, media: input.media } : { text: String(input) }),
+  };
+
+  if (!isAudioPayload) {
+    $("heardPill").hidden = false;
+    $("heardPill").textContent = `你说："${input}"`;
+  }
+  setStageVisual("thinking");
+  status(isAudioPayload ? "正在识别语音…" : "Sparky 正在思考…");
+  player.beginTurn(null);
+
+  try {
+    const res = await fetch("/api/turn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: abortCtrl.signal,
+    });
+
+    await readNdjsonStream(
+      res,
+      ev => {
+        if (ev.type === "transcript") {
+          $("heardPill").hidden = false;
+          $("heardPill").textContent = `听到你说："${ev.text}"`;
+          status("Sparky 正在接话…");
+        } else if (ev.type === "empty") {
+          status(ev.message || "没听清，再说一次吧。");
+          voice.setProcessing(false);
+          setStageVisual(voice.active ? "listening" : "idle");
+        } else if (ev.type === "sentence") {
+          streamingSentences.push(ev.text);
+          renderHighlightedBubble(streamingSentences.join(" "));
+        } else if (ev.type === "audio_pcm") {
+          if (!firstAudioRecorded) {
+            firstAudioRecorded = true;
+            const firstAudioMs = Math.round(performance.now() - startedAt);
+            apiJson("/api/metrics", {
+              profile: pid,
+              turn: turnId,
+              metrics: {
+                client_first_audio_ms: firstAudioMs,
+                ...(isAudioPayload && input.vadMs ? { vad_endpoint_ms: input.vadMs } : {}),
+              },
+            }).catch(() => {});
+          }
+          player.enqueuePcmBase64(ev.pcm, ev.rate || 24000, ev.segment ?? 0);
+          status("");
+        } else if (ev.type === "segment_done") {
+          player.markSegmentStreamDone(ev.segment ?? 0);
+        } else if (ev.type === "state") {
+          appData.state = ev.state;
+          player.attachReplyId(ev.state.session.reply.id);
+          if (!appData.capabilities.voice_enabled) {
+            apiJson("/api/delivery", {
+              profile: pid,
+              reply: ev.state.session.reply.id,
+              status: "complete",
+            }).catch(() => {});
+          }
+          renderCompanionScreen();
+          renderInspector();
+        } else if (ev.type === "tts_warning") {
+          status(`文字已更新（语音提示：${ev.error}）`);
+        }
+      },
+      abortCtrl.signal
+    );
+
+    if (activeTurnId === turnId) {
+      activeTurnId = null;
+      activeAbort = null;
+      if (!player.speaking) {
+        voice.setProcessing(false);
+        setStageVisual(voice.active ? "listening" : "idle");
+      }
+      await refreshTraces();
+    }
+  } catch (err) {
+    if (err.name === "AbortError") return;
+    status(err.message || "对话请求中断。");
+    voice.setProcessing(false);
+    setStageVisual(voice.active ? "listening" : "idle");
+  }
+}
+
+async function speakCurrentReply() {
+  const pid = appData.state?.profile?.id;
+  const replyId = appData.state?.session?.reply?.id;
+  if (!pid || !replyId || !appData.capabilities.voice_enabled) return;
+
+  cancelInFlightTurn();
+  const abortCtrl = new AbortController();
+  activeAbort = abortCtrl;
+  player.beginTurn(replyId);
+  status("正在合成 Sparky 的开场语音…");
+
+  try {
+    const res = await fetch("/api/speech", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: pid }),
+      signal: abortCtrl.signal,
+    });
+    await readNdjsonStream(
+      res,
+      ev => {
+        if (ev.type === "audio_pcm") {
+          player.enqueuePcmBase64(ev.pcm, ev.rate || 24000, ev.segment ?? 0);
+          status("");
+        } else if (ev.type === "segment_done") {
+          player.markSegmentStreamDone(ev.segment ?? 0);
+        } else if (ev.type === "tts_warning") {
+          status(ev.error || "");
+        }
+      },
+      abortCtrl.signal
+    );
+  } catch (err) {
+    if (err.name !== "AbortError") status(err.message);
+  }
+}
+
+async function triggerNextSession() {
+  const pid = appData.state?.profile?.id;
+  if (!pid) return;
+  cancelInFlightTurn();
+  status("正在归档本场记忆与掌握度，准备开启下一场对话…");
+  setStageVisual("thinking", "Archiving memory…");
+  try {
+    const res = await apiJson("/api/session/next", { profile: pid });
+    appData.profiles = res.profiles;
+    appData.state = res.state;
+    appData.traces = res.traces;
+    $("heardPill").hidden = true;
+    renderAll();
+    status(`已进入 Session ${res.state.session.session_num}！注意看 Sparky 如何结合上场记忆和熟词主动打招呼。`);
+    if (appData.capabilities.voice_enabled) {
+      await speakCurrentReply();
+    } else {
+      setStageVisual("idle");
+    }
+  } catch (err) {
+    status(err.message);
+    setStageVisual("idle");
+  }
+}
+
+// Wire UI Controls
+$("handsFreeToggle").onchange = () => {
+  voice.handsFree = $("handsFreeToggle").checked;
+  if (voice.active) {
+    voice.stop();
+  }
+  updateMicButton();
+};
+
+$("micBtn").onclick = async () => {
+  player.ensureContext();
+  if (player.speaking && voice.active) {
+    cancelInFlightTurn();
+    voice._beginSegmentRecorder(true);
+    status("已打断，请直接说话…");
+    return;
+  }
+  if (voice.active) {
+    if (voice.handsFree) {
+      voice.stop();
+      status("语音监听已暂停。");
+    } else {
+      voice.finishUtterance();
+    }
+    return;
+  }
+  try {
+    await voice.start();
+    status(voice.handsFree ? "正在连续监听（说完停顿即自动发送，Sparky 说话时你可直接插话）" : "正在录音，说完再点一次发送。");
+  } catch (err) {
+    status(err.message);
+  }
+};
+
+$("replayBtn").onclick = () => {
+  if (appData.capabilities.voice_enabled) {
+    speakCurrentReply();
+  } else {
+    status("离线演示模式下未启用云端语音合成。");
+  }
+};
+
+$("textForm").onsubmit = ev => {
+  ev.preventDefault();
+  const val = $("textInput").value.trim();
+  if (!val) return;
+  $("textInput").value = "";
+  player.ensureContext();
+  sendTurn(val, false);
+};
+
+$("exitPlaylet").onclick = () => sendTurn("Let's stop the game and chat about something else.", false);
+$("nextSessionQuick").onclick = triggerNextSession;
+$("nextSessionBtn").onclick = triggerNextSession;
+
+$("toggleInspector").onclick = () => $("layout").classList.toggle("inspector-closed");
+$("closeInspector").onclick = () => $("layout").classList.add("inspector-closed");
+
+$("profileSelect").onchange = async () => {
+  cancelInFlightTurn();
+  const pid = $("profileSelect").value;
+  localStorage.setItem("sparky.v2.profile", pid);
+  const res = await apiJson(`/api/state/${pid}`);
+  appData.state = res.state;
+  appData.traces = res.traces;
+  $("heardPill").hidden = true;
+  renderAll();
+};
+
+$("newFreshBtn").onclick = async () => {
+  cancelInFlightTurn();
+  const name = window.prompt("输入新测试儿童称呼：", "Leo");
+  if (name === null) return;
+  const res = await apiJson("/api/profile", { op: "create", name: name || "Leo", preset: "fresh" });
+  appData.profiles = res.profiles;
+  appData.state = res.state;
+  appData.traces = res.traces;
+  localStorage.setItem("sparky.v2.profile", res.state.profile.id);
+  $("heardPill").hidden = true;
+  renderAll();
+  status("已创建零基础 Session 1 画像。");
+};
+
+$("newReturningBtn").onclick = async () => {
+  cancelInFlightTurn();
+  const res = await apiJson("/api/profile", { op: "create", name: "Maya", preset: "returning_dino" });
+  appData.profiles = res.profiles;
+  appData.state = res.state;
+  appData.traces = res.traces;
+  localStorage.setItem("sparky.v2.profile", res.state.profile.id);
+  $("heardPill").hidden = true;
+  renderAll();
+  status("已加载回归老朋友 Maya (Session 2，已解锁第2单元『我喜欢…』且带恐龙记忆)！");
+  if (appData.capabilities.voice_enabled) speakCurrentReply();
+};
+
+$("deleteProfileBtn").onclick = async () => {
+  const pid = appData.state?.profile?.id;
+  if (!pid || !window.confirm("确定删除该测试档案吗？")) return;
+  cancelInFlightTurn();
+  const res = await apiJson("/api/profile", { op: "delete", profile: pid });
+  appData.profiles = res.profiles;
+  appData.state = res.state;
+  appData.traces = res.traces;
+  localStorage.setItem("sparky.v2.profile", res.state.profile.id);
+  renderAll();
+};
+
+$("langModeSelect").onchange = async () => {
+  const pid = appData.state?.profile?.id;
+  if (!pid) return;
+  const res = await apiJson("/api/memory", { profile: pid, op: "set_language", value: $("langModeSelect").value });
+  appData.state = res.state;
+  renderAll();
+};
+
+$("addFactForm").onsubmit = async ev => {
+  ev.preventDefault();
+  const val = $("factInput").value.trim();
+  const pid = appData.state?.profile?.id;
+  if (!val || !pid) return;
+  $("factInput").value = "";
+  const res = await apiJson("/api/memory", { profile: pid, op: "add_fact", value: val });
+  appData.state = res.state;
+  renderAll();
+};
+
+$("reloadCurrBtn").onclick = async () => {
+  try {
+    const res = await apiJson("/api/curriculum/reload", { profile: appData.state?.profile?.id });
+    appData.curriculum = res.curriculum;
+    if (res.state) appData.state = res.state;
+    renderAll();
+    status(`课程配置热重载成功 (digest: ${res.curriculum.digest})！`);
+  } catch (err) {
+    status(err.message);
+  }
+};
+
+// Bootstrap
+(async () => {
+  try {
+    const boot = await apiJson("/api/bootstrap");
+    appData = boot;
+    const saved = localStorage.getItem("sparky.v2.profile");
+    if (saved && boot.profiles.some(p => p.id === saved) && saved !== boot.state.profile.id) {
+      const switched = await apiJson(`/api/state/${saved}`);
+      appData.state = switched.state;
+      appData.traces = switched.traces;
+    }
+    renderAll();
+    status(
+      boot.capabilities.voice_enabled
+        ? "点击「开启连续语音对话」直接开口，或在下方输入一句话体验陪伴+教学闭环。"
+        : "当前未设置 OPENAI_API_KEY，已进入本地离线演示模式（可完整测试大纲进阶、词卡与跨场记忆）。"
+    );
+  } catch (err) {
+    status("初始化失败：" + err.message);
+  }
+})();

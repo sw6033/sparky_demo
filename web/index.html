@@ -1,12 +1,141 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#f6f6ee"><title>Sparky · 中文小屋</title><link rel="stylesheet" href="/style.css"><script defer src="/live.js"></script><script defer src="/transport.js"></script><script defer src="/cascade.js"></script><script defer src="/app.js"></script></head>
-<body><header><div class="brand"><i aria-hidden="true">✦</i> Sparky <small>中文小屋</small></div><span class="meta" id="mode"></span></header>
-<main><section class="conversation"><div class="caption">双语伙伴 Sparky</div>
-<h1 id="title">今天想聊什么？</h1><div id="reply" class="bubble" aria-live="polite">正在打开小屋…</div>
-<div class="mascot" aria-hidden="true"><div class="ray r1"></div><div class="ray r2"></div><div class="ray r3"></div><div class="fox"><b></b><b></b><div class="face"><i></i><i></i><span></span></div></div></div>
-</section>
-<div id="cascadeControls" hidden><div class="soundbar"><button id="record" type="button">开始说话</button><button id="interrupt" type="button">打断并说话</button><button id="stopVoice" type="button">停止语音</button></div>
-<p><label><input id="continuous" type="checkbox">连续对话：播完自动继续听</label> <label>等待停顿 <select id="pauseLength"><option value="1000">短</option><option value="1500" selected>适中</option><option value="2200">多等一会儿</option></select></label></p>
-<p class="meta">声音由 AI 生成。录音将发送至 OpenAI 识别，本机不保存录音。停止语音或离开页面会停止接听。</p></div>
-<p id="status" role="status"></p><form id="chat"><label class="sr" for="input">告诉 Sparky</label><input id="input" placeholder="也可以打字，按回车告诉 Sparky…" autocomplete="off" enterkeyhint="send" maxlength="800"></form>
-<p id="heard" class="meta"></p><p class="meta"><a href="/parent">家长空间：语言能力与记忆</a></p></main></body></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f3ea">
+  <title>Sparky · 双语陪伴伙伴 (POC v2)</title>
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="/voice.js"></script>
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <div class="layout" id="layout">
+    <div class="companion-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="spark" aria-hidden="true">✦</span>
+          <strong>Sparky</strong>
+          <span class="badge" id="sessionBadge">Session 1</span>
+          <span class="badge subtle" id="modeBadge">Loading…</span>
+        </div>
+        <div class="topbar-actions">
+          <button type="button" id="nextSessionQuick" class="btn secondary" title="归档当前对话记忆并模拟进入下一次见面">⏭ 模拟下一场对话</button>
+          <button type="button" id="toggleInspector" class="btn ghost">🛠 观测与大纲面板</button>
+        </div>
+      </header>
+
+      <main class="stage-main">
+        <section class="companion-stage" id="companionStage" data-state="idle">
+          <div class="playlet-pill" id="playletBanner" hidden>
+            <span id="playletTitle">🎲 互动小游戏</span>
+            <button type="button" id="exitPlaylet" class="mini-link">换个话题 ×</button>
+          </div>
+
+          <div class="avatar-wrap">
+            <div class="voice-ring" id="voiceRing"></div>
+            <div class="fox-avatar" id="foxAvatar" aria-hidden="true">
+              <div class="ear left"></div>
+              <div class="ear right"></div>
+              <div class="head">
+                <div class="cheek"></div>
+                <div class="eye left"></div>
+                <div class="eye right"></div>
+                <div class="nose"></div>
+                <div class="mouth" id="foxMouth"></div>
+              </div>
+              <div class="thought-dots"><i></i><i></i><i></i></div>
+            </div>
+            <div class="state-pill" id="stateLabel">Ready to hang out</div>
+          </div>
+
+          <div class="speech-panel">
+            <div class="reply-bubble" id="replyBubble" aria-live="polite">Opening Sparky's den…</div>
+            <div class="heard-pill" id="heardPill" hidden></div>
+          </div>
+        </section>
+
+        <section class="cards-area" id="cardsArea" hidden>
+          <div class="area-caption">✦ Sparky 的双语灵感卡（说出或点击卡片均可互动）</div>
+          <div class="card-tray" id="cardTray"></div>
+        </section>
+
+        <section class="stars-bar" id="starsBar" hidden>
+          <span class="stars-label">🌟 我们的中文默契词：</span>
+          <div class="star-list" id="starList"></div>
+        </section>
+
+        <section class="controls-dock">
+          <div class="voice-controls">
+            <button type="button" id="micBtn" class="btn primary big-mic">🎙 开启语音对话</button>
+            <button type="button" id="replayBtn" class="btn secondary">🔊 重听这句</button>
+            <label class="toggle-chip" title="连续免按键自动收音并支持开口打断；嘈杂环境可取消勾选改为手动点击说话">
+              <input type="checkbox" id="handsFreeToggle" checked>
+              <span>免按键连续听 + 开口打断</span>
+            </label>
+          </div>
+          <p class="status-line" id="statusLine" role="status"></p>
+          <form id="textForm" class="text-bar">
+            <input id="textInput" type="text" maxlength="600" autocomplete="off" placeholder="也可以直接输入英文或中文和 Sparky 聊天（回车发送）…">
+            <button type="submit" class="btn primary">发送</button>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <aside class="inspector-drawer" id="inspectorDrawer">
+      <div class="inspector-header">
+        <h2>POC 观测与大纲控制台</h2>
+        <button type="button" id="closeInspector" class="btn ghost small">收起 ✕</button>
+      </div>
+
+      <section class="insp-card">
+        <h3>1. 儿童画像与跨场验证</h3>
+        <div class="profile-row">
+          <select id="profileSelect" aria-label="选择测试档案"></select>
+          <button type="button" id="deleteProfileBtn" class="btn danger-ghost small">删除</button>
+        </div>
+        <div class="btn-grid">
+          <button type="button" id="newFreshBtn" class="btn secondary small">+ 零基础新画像 (S1)</button>
+          <button type="button" id="newReturningBtn" class="btn secondary small">+ 恐龙迷老朋友 Maya (S2)</button>
+        </div>
+        <button type="button" id="nextSessionBtn" class="btn accent full-width">⏭ 结束本场 → 归档记忆并开启下一场 (Next Session)</button>
+      </section>
+
+      <section class="insp-card">
+        <div class="row-between">
+          <h3>2. 当轮教学切片 (SessionFocus)</h3>
+          <select id="langModeSelect" class="small-select" title="持续语言偏好">
+            <option value="bilingual">双语自然引导</option>
+            <option value="english">仅说英语</option>
+            <option value="chinese">中文优先</option>
+          </select>
+        </div>
+        <div id="focusSummary" class="kv-box"></div>
+      </section>
+
+      <section class="insp-card">
+        <div class="row-between">
+          <h3>3. 可配置大纲与掌握度账本</h3>
+          <button type="button" id="reloadCurrBtn" class="btn ghost small">↻ 热重载配置</button>
+        </div>
+        <div id="syllabusTree" class="syllabus-tree"></div>
+      </section>
+
+      <section class="insp-card">
+        <h3>4. 伙伴长期记忆与跨场摘要</h3>
+        <div id="memoryBox" class="memory-box"></div>
+        <form id="addFactForm" class="inline-form">
+          <input id="factInput" type="text" maxlength="100" placeholder="手动注入一条记忆（如 Loves sharks）">
+          <button type="submit" class="btn secondary small">添加</button>
+        </form>
+      </section>
+
+      <section class="insp-card">
+        <h3>5. 轮次决策与延迟追踪</h3>
+        <div id="traceList" class="trace-list"></div>
+      </section>
+    </aside>
+  </div>
+</body>
+</html>

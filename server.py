@@ -1,343 +1,475 @@
-"""Run locally; --cascade additionally requires requirements.txt."""
+"""Sparky POC v2 Server: Streaming Cascade (ASR -> Streaming Brain -> Streaming PCM TTS)."""
+from __future__ import annotations
+
 import argparse
 import base64
-import hashlib
-import hmac
 import json
 import os
+import queue
 import re
-import secrets
+import threading
 import time
-from http import HTTPStatus
-from http.cookies import SimpleCookie
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlsplit
-from sparky import brain, live, speech, segments, diagnostics, access
-from sparky.content import Catalog, ROOT
-from sparky.store import Store, Missing, Conflict
 
-ACTIONS={"start","resume","pause","finish","select","help","meaning","refuse","utterance","silence"}
-def string(obj,key,limit,blank=False):
-    v=obj.get(key)
-    if not isinstance(v,str) or len(v)>limit or (not blank and not v.strip()):
-        raise ValueError("字段无效："+key)
-    return v.strip()
+from sparky import brain, diagnostics, segments, speech
+from sparky.curriculum import Curriculum, ROOT
+from sparky.store import Conflict, Missing, Store
 
-def validate_event(e):
-    string(e,"id",100)
-    if type(e.get("revision")) is not int or e["revision"]<0 or e.get("type") not in ACTIONS:
-        raise ValueError("事件类型或版本无效。")
-    if e["type"]=="start":
-        if e.get("mode") not in ("A","B"):
-            raise ValueError("活动类型无效。")
-        string(e,"lesson",80)
-    if e["type"]=="select":
-        string(e,"item",80)
-    if e["type"]=="utterance":
-        string(e,"text",800,True)
-        if e.get("source","text") not in ("text","voice"):
-            raise ValueError("输入来源无效。")
-        confidence=e.get("confidence",1)
-        if type(confidence) not in (float,int) or not 0<=confidence<=1 or e.get("speaker","child") not in ("child","unknown"):
-            raise ValueError("输入来源或质量无效。")
 
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self,*args):
+def _str(obj: dict, key: str, limit: int, allow_blank: bool = False) -> str:
+    val = obj.get(key)
+    if not isinstance(val, str) or len(val) > limit or (not allow_blank and not val.strip()):
+        raise ValueError(f"字段无效: {key}")
+    return val.strip()
+
+
+class SparkyHandler(BaseHTTPRequestHandler):
+    def log_message(self, *args) -> None:
         pass
 
-    def cascade_turn(self,family,pid,b):
-        store=self.server.store
-        turn=string(b,"turn",100)
-        event={"id":turn,"revision":b.get("revision"),"type":"utterance","text":"", "source":"voice" if "audio" in b else "text"}
-        validate_event(event)
-        store.current_turn(family,pid,turn)
-        if "audio" in b:
-            encoded=string(b,"audio",4*1024*1024);media=string(b,"media",100)
-        else:event["text"]=string(b,"text",800)
-        receipts=b.get("receipts",[])
-        if not isinstance(receipts,list) or len(receipts)>128:raise ValueError("无效播放回执。")
-        for receipt in receipts:
-            if not isinstance(receipt,dict):raise ValueError("无效播放回执。")
-            string(receipt,"reply",64);string(receipt,"attempt",100)
-            if receipt.get("status") not in {"started","complete","interrupted","failed"}:raise ValueError("无效播放回执。")
-            part=receipt.get("segment")
-            if part is not None and (type(part) is not int or part<0):raise ValueError("无效播放回执。")
-        for receipt in receipts:
-            store.delivery(family,pid,receipt["reply"],receipt["status"],receipt["attempt"],receipt.get("segment"))
-        self.protocol_version="HTTP/1.1"
-        self.close_connection=True
-        self.send_response(200)
-        self.send_header("Content-Type","application/x-ndjson")
-        self.send_header("Transfer-Encoding","chunked")
-        self.send_header("Connection","close")
-        self.send_header("Cache-Control","no-store, no-transform")
-        self.send_header("X-Content-Type-Options","nosniff")
-        self.end_headers()
-        def emit(value):
-            data=(json.dumps(value,ensure_ascii=False)+"\n").encode()
-            self.wfile.write(f"{len(data):x}\r\n".encode()+data+b"\r\n");self.wfile.flush()
-        started=time.monotonic()
-        try:
-            emit({"type":"stage","stage":"asr" if "audio" in b else "brain"})
-            if "audio" in b:
-                phase=time.monotonic()
-                try:event["text"]=speech.transcribe(self.server.cascade_key,encoded,media)
-                except speech.SpeechError:
-                    store.trace(family,pid,turn,{"asr_ms":diagnostics.elapsed(phase),"asr_status":"failed"});raise
-                store.trace(family,pid,turn,{"asr_ms":diagnostics.elapsed(phase),"asr_status":"ok"})
-                store.current_turn(family,pid,turn)
-                emit({"type":"transcript","text":event["text"]})
-                if not event["text"].strip():
-                    emit({"type":"stop","message":"没有听清，请重新开启麦克风或打字。"})
-                elif re.search(r"(关闭语音|关闭麦克风)[。！!？?\s]*$",event["text"]):
-                    emit({"type":"stop","message":"麦克风已关闭。"})
-                else:event["source"]="voice"
-                if not event["text"].strip() or re.search(r"(关闭语音|关闭麦克风)[。！!？?\s]*$",event["text"]):
-                    self.wfile.write(b"0\r\n\r\n");self.wfile.flush();return
-            validate_event(event)
-            state,duplicate=store.event(family,pid,event)
-            reply=segments.attach(state["reply"])
-            emit({"type":"state","state":state,"duplicate":duplicate})
-            part=None if reply["speech_mode"]=="whole" else 0
-            text=reply["text"] if part is None else reply["segments"][0]["text"]
-            store.current_turn(family,pid,turn,reply["id"])
-            phase=time.monotonic();stage="tts" if part is None else "tts_0"
-            try:audio=speech.synthesize(self.server.cascade_key,text)
-            except speech.SpeechError:
-                store.trace(family,pid,turn,{stage+"_ms":diagnostics.elapsed(phase),stage+"_status":"failed"});raise
-            store.current_turn(family,pid,turn,reply["id"])
-            store.trace(family,pid,turn,{stage+"_ms":diagnostics.elapsed(phase),stage+"_status":"ok","pipeline_ready_ms":diagnostics.elapsed(started)})
-            emit({"type":"audio","reply":reply["id"],"segment":part,"audio":base64.b64encode(audio).decode()})
-        except (Missing,Conflict,speech.SpeechError) as exc:
-            emit({"type":"error","error":str(exc) or "档案不存在。","code":404 if isinstance(exc,Missing) else 409 if isinstance(exc,Conflict) else 502})
-        except (ValueError,KeyError,TypeError):
-            emit({"type":"error","error":"语音输入无效，请重试。","code":400})
-        self.wfile.write(b"0\r\n\r\n");self.wfile.flush()
-
-    def respond(self,status,data,media="application/json; charset=utf-8"):
-        body=data if isinstance(data,bytes) else json.dumps(data,ensure_ascii=False).encode()
+    def respond_json(self, status: int, data: object) -> None:
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type",media)
-        self.send_header("Content-Length",str(len(body)))
-        self.send_header("Cache-Control","no-store")
-        self.send_header("X-Content-Type-Options","nosniff")
-        self.send_header("Referrer-Policy","no-referrer")
-        self.send_header("X-Frame-Options","DENY")
-        secure="; Secure" if self.server.gate.origin else ""
-        if getattr(self,"access_cookie",None):
-            self.send_header("Set-Cookie","sparky_access="+self.access_cookie+"; HttpOnly; SameSite=Strict; Path=/; Max-Age=7200"+secure)
-        if getattr(self,"new_cookie",None):
-            self.send_header("Set-Cookie","sparky_family="+self.new_cookie+"; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000"+secure)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
-    def family(self):
-        c=SimpleCookie(self.headers.get("Cookie",""))
-        token=c["sparky_family"].value if "sparky_family" in c else ""
-        if not re.fullmatch(r"[a-f0-9]{64}",token):
-            token=self.new_cookie=secrets.token_hex(32)
-        return hashlib.sha256(token.encode()).hexdigest()
+    def respond_bytes(self, status: int, body: bytes, content_type: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
-    def parent_check(self):
-        pin=os.getenv("SPARKY_PARENT_PIN","")
-        if pin and not hmac.compare_digest(self.headers.get("X-Parent-Pin","").encode(),pin.encode()):
-            raise PermissionError("需要正确的家长 PIN。")
+    def _begin_ndjson(self) -> callable:
+        self.protocol_version = "HTTP/1.1"
+        self.close_connection = True
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Connection", "close")
+        self.send_header("Cache-Control", "no-store, no-transform")
+        self.end_headers()
+        write_lock = threading.Lock()
 
-    def route(self):
-        host=self.headers.get("Host","")
-        gate=self.server.gate
-        if host!=gate.host and urlsplit("//"+host).hostname not in {"localhost","127.0.0.1","::1"}:
-            raise PermissionError("仅允许本机访问。")
-        path=urlsplit(self.path).path
-        origin=gate.origin if host==gate.host else "http://"+host
-        if not gate.allow(self,path):return
-        store=self.server.store
-        if self.command=="GET":
-            if path=="/api/home":
-                if self.server.prewarm and self.server.cascade_key:speech.warm(self.server.cascade_key)
-                family=self.family()
-                return self.respond(200,{"lessons":store.catalog.listing(),"profiles":store.profiles(family),
-                    "model":brain.configured(),"live":bool(self.server.live_key),
-                    "cascade":bool(self.server.cascade_key),"pin":bool(os.getenv("SPARKY_PARENT_PIN"))})
-            if match:=re.fullmatch(r"/api/state/([a-f0-9]{32})",path):
-                return self.respond(200,store.state(self.family(),match[1]))
-            assets={"/debug":("debug.html","text/html"),"/debug.js":("debug.js","application/javascript"),"/parent":("parent.html","text/html"),"/parent.js":("parent.js","application/javascript"),"/":("index.html","text/html"),"/app.js":("app.js","application/javascript"),
-                "/transport.js":("transport.js","application/javascript"),"/live.js":("live.js","application/javascript"),"/cascade.js":("cascade.js","application/javascript"),"/style.css":("style.css","text/css")}
-            if path in assets:
-                name,mime=assets[path]
-                return self.respond(200,(ROOT/"web"/name).read_bytes(),mime+"; charset=utf-8")
-            raise Missing()
-        if self.headers.get("Origin") and self.headers["Origin"]!=origin:
-            raise PermissionError("来源无效。")
-        length=int(self.headers.get("Content-Length","0"))
-        limit=4*1024*1024+65536 if path in {"/api/transcribe","/api/cascade"} else (65536 if path=="/api/live" else 16384)
-        if length<=0 or length>limit or self.headers.get_content_type()!="application/json":
-            raise ValueError("请求格式无效。")
-        b=json.loads(self.rfile.read(length))
-        if not isinstance(b,dict):
-            raise ValueError("请求必须是对象。")
-        family=self.family()
-        if path=="/api/profile":
-            self.parent_check()
-            return self.respond(201,{"id":store.create(family,string(b,"name",32))})
-        pid=string(b,"profile",40)
-        if path=="/api/cascade":
-            if not self.server.cascade_key:return self.respond(503,{"error":"尚未开启 Cascade 语音。"})
-            if self.headers.get("Origin")!=origin:raise PermissionError("来源无效。")
-            return self.cascade_turn(family,pid,b)
-        if path=="/api/cancel":
-            store.cancel(family,pid,string(b,"turn",100))
-            return self.respond(200,{"ok":True})
-        if path in {"/api/transcribe", "/api/speech"}:
-            if not self.server.cascade_key:
-                return self.respond(503,{"error":"尚未开启 Cascade 语音。"})
-            if self.headers.get("Origin")!=origin:
-                raise PermissionError("来源无效。")
-            snapshot=store.state(family,pid)
-            turn=string(b,"turn",100) if b.get("turn") else secrets.token_hex(16)
-            store.current_turn(family,pid,turn)
-            started=time.monotonic()
-            if path=="/api/transcribe":
-                try:
-                    text=speech.transcribe(self.server.cascade_key,string(b,"audio",4*1024*1024),string(b,"media",100))
-                except speech.SpeechError:
-                    store.trace(family,pid,turn,{"asr_ms":diagnostics.elapsed(started),"asr_status":"failed"})
-                    raise
-                values={"asr_ms":diagnostics.elapsed(started),"asr_status":"ok"}
-                if os.getenv("SPARKY_DEBUG_TRANSCRIPTS")=="1":
-                    values["asr_text"]=text
-                store.trace(family,pid,turn,values)
-                return self.respond(200,{"text":text})
-            reply=string(b,"reply",64)
-            if snapshot["reply"]["id"]!=reply:
-                raise Conflict("回复已过期。")
-            part=b.get("segment")
-            parts=segments.attach(snapshot["reply"])["segments"]
-            if part is not None and (type(part) is not int or not 0<=part<len(parts)):
-                raise ValueError("无效语音分句。")
-            text=snapshot["reply"]["text"] if part is None else parts[part]["text"]
-            stage="tts" if part is None else f"tts_{part}"
+        def emit(payload: dict) -> None:
+            raw = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+            with write_lock:
+                self.wfile.write(f"{len(raw):x}\r\n".encode("ascii") + raw + b"\r\n")
+                self.wfile.flush()
+
+        return emit
+
+    def _finish_ndjson(self) -> None:
+        self.wfile.write(b"0\r\n\r\n")
+        self.wfile.flush()
+
+    def _stream_turn(self, body: dict) -> None:
+        store: Store = self.server.store
+        speech_key: str = self.server.speech_key
+        pid = _str(body, "profile", 64)
+        turn_id = _str(body, "turn", 100) if body.get("turn") else uuid.uuid4().hex
+        want_audio = bool(body.get("want_audio", True) and speech_key)
+
+        # Apply piggybacked playback receipts from the previous reply first
+        receipts = body.get("receipts") or []
+        if isinstance(receipts, list):
+            for rec in receipts[:64]:
+                if isinstance(rec, dict) and isinstance(rec.get("reply"), str) and isinstance(rec.get("status"), str):
+                    seg = rec.get("segment")
+                    store.record_delivery(pid, rec["reply"], rec["status"], seg if type(seg) is int else None)
+
+        store.ensure_not_cancelled(pid, turn_id)
+        has_audio = "audio" in body and body["audio"]
+        if has_audio:
+            encoded_audio = _str(body, "audio", 6 * 1024 * 1024)
+            media = _str(body, "media", 100)
+            user_text = ""
+            source = "voice"
+        else:
+            encoded_audio = ""
+            media = ""
+            user_text = _str(body, "text", 800)
+            source = "text"
+
+        emit = self._begin_ndjson()
+        turn_started = time.monotonic()
+        timing: dict[str, float] = {}
+
+        try:
+            if has_audio:
+                if not speech_key:
+                    raise speech.SpeechError("服务端未配置 OpenAI 密钥，无法进行语音识别。")
+                emit({"type": "stage", "stage": "asr"})
+                pre_ctx = store.prepare_turn_context(pid, turn_id, "")
+                t0 = time.monotonic()
+                user_text = speech.transcribe(speech_key, encoded_audio, media, hotwords=pre_ctx.get("hotwords"))
+                timing["asr_ms"] = diagnostics.elapsed(t0)
+                store.ensure_not_cancelled(pid, turn_id)
+                emit({"type": "transcript", "text": user_text, "asr_ms": timing["asr_ms"]})
+                if not user_text.strip():
+                    emit({"type": "empty", "message": "没有听清，再说一次吧。"})
+                    self._finish_ndjson()
+                    return
+
+            ctx = store.prepare_turn_context(pid, turn_id, user_text)
+            if ctx.get("duplicate"):
+                emit({"type": "state", "state": ctx["public"], "duplicate": True})
+                self._finish_ndjson()
+                return
+
+            emit({"type": "stage", "stage": "thinking", "focus": ctx["focus"]})
+
+            # Overlap sentence-by-sentence TTS synthesis in a worker thread while Brain SSE finishes!
+            tts_queue: queue.Queue[tuple[int, str] | None] = queue.Queue()
+            cancelled_flag = threading.Event()
+            tts_worker_error: list[str] = []
+
+            def _tts_worker() -> None:
+                first_pcm_logged = False
+                while not cancelled_flag.is_set():
+                    item = tts_queue.get()
+                    if item is None:
+                        return
+                    seg_idx, seg_text = item
+                    seg_t0 = time.monotonic()
+                    try:
+                        store.ensure_not_cancelled(pid, turn_id)
+                        for pcm_chunk in speech.stream_tts_pcm(speech_key, seg_text):
+                            if cancelled_flag.is_set():
+                                return
+                            store.ensure_not_cancelled(pid, turn_id)
+                            if not first_pcm_logged:
+                                first_pcm_logged = True
+                                timing["server_first_pcm_ms"] = diagnostics.elapsed(turn_started)
+                            emit(
+                                {
+                                    "type": "audio_pcm",
+                                    "segment": seg_idx,
+                                    "rate": speech.PCM_RATE,
+                                    "pcm": base64.b64encode(pcm_chunk).decode("ascii"),
+                                }
+                            )
+                        timing[f"tts_seg_{seg_idx}_ms"] = diagnostics.elapsed(seg_t0)
+                        emit({"type": "segment_done", "segment": seg_idx})
+                    except Conflict:
+                        cancelled_flag.set()
+                        return
+                    except speech.SpeechError as exc:
+                        tts_worker_error.append(str(exc))
+                        emit({"type": "tts_warning", "segment": seg_idx, "error": str(exc)})
+                        return
+
+            worker = threading.Thread(target=_tts_worker, daemon=True) if want_audio else None
+            if worker:
+                worker.start()
+
+            seg_counter = 0
+            final_reply = ""
+            final_meta: dict = {}
+            brain_stats: dict = {}
+
             try:
-                audio=speech.synthesize(self.server.cascade_key,text)
-            except speech.SpeechError:
-                store.trace(family,pid,turn,{stage+"_ms":diagnostics.elapsed(started),stage+"_status":"failed"})
-                raise
-            store.current_turn(family,pid,turn,reply)
-            store.trace(family,pid,turn,{stage+"_ms":diagnostics.elapsed(started),stage+"_status":"ok"})
-            return self.respond(200,audio,"audio/wav")
-        if path=="/api/live":
-            if not self.server.live_key:
-                return self.respond(503,{"error":"本机尚未开启 GPT-Live 成人测试。"})
-            if self.headers.get("Origin")!=origin:
-                raise PermissionError("来源无效。")
-            store.state(family,pid)
-            sdp=b.get("sdp")
-            if not isinstance(sdp,str) or not sdp.startswith("v=0\r\n"):
-                raise ValueError("无效的语音连接请求。")
-            return self.respond(*live.connect(self.server.live_key,sdp,store.catalog.conversation))
-        if path=="/api/event":
-            e=b.get("event")
-            if not isinstance(e,dict):
-                raise ValueError("缺少事件。")
-            validate_event(e)
-            state,duplicate=store.event(family,pid,e)
-            return self.respond(200,{"state":state,"duplicate":duplicate})
-        if path=="/api/delivery":
-            if b.get("status") not in ("started","complete","interrupted","failed"):
-                raise ValueError("播放状态无效。")
-            store.delivery(family,pid,string(b,"reply",64),b["status"],string(b,"attempt",80),b.get("segment"))
-            return self.respond(200,{"ok":True})
-        if path=="/api/metrics":
-            metrics=b.get("metrics")
-            allowed={"endpoint_wait_ms","first_audio_ms","total_turn_ms","recording_ms","pipeline_transcript_ms","pipeline_state_ms","pipeline_audio_ms","pipeline_request_ms","audio_start_ms","sentence_gap_ms","sentence_gap_max_ms","client_queue_ms"}
-            if not isinstance(metrics,dict) or any(k not in allowed or type(v) not in (int,float) or not 0<=v<=300000 for k,v in metrics.items()):
-                raise ValueError("无效耗时数据。")
-            store.trace(family,pid,string(b,"turn",100),{"client_metrics":metrics})
-            return self.respond(200,{"ok":True})
-        if path=="/api/debug":
-            self.parent_check()
-            return self.respond(200,store.debug(family,pid))
-        if path=="/api/parent":
-            self.parent_check()
-            op=b.get("op","summary")
-            if op not in ("summary","delete","remember","forget","forget_context","learner"):
-                raise ValueError("未知操作。")
-            value=b.get("value") if op=="learner" else string(b,"value",80) if op in ("remember","forget") else ""
-            return self.respond(200,store.parent(family,pid,op,value))
-        raise Missing()
+                for event_kind, *payload in brain.stream_turn(user_text, ctx):
+                    store.ensure_not_cancelled(pid, turn_id)
+                    if event_kind == "sentence":
+                        sent_text = payload[0]
+                        emit({"type": "sentence", "segment": seg_counter, "text": sent_text})
+                        if worker:
+                            tts_queue.put((seg_counter, sent_text))
+                        seg_counter += 1
+                    elif event_kind == "done":
+                        final_reply, final_meta, brain_stats = payload
+            finally:
+                if worker:
+                    tts_queue.put(None)
 
-    def handle_request(self):
+            timing.update({k: v for k, v in brain_stats.items() if isinstance(v, (int, float))})
+            committed_state = store.commit_turn(
+                pid=pid,
+                turn_id=turn_id,
+                user_text=user_text,
+                source=source,
+                reply_text=final_reply,
+                meta={**final_meta, "brain_source": brain_stats.get("source")},
+                focus=ctx["focus"],
+                timing=timing,
+            )
+            emit({"type": "state", "state": committed_state, "turn_id": turn_id})
+
+            if worker:
+                worker.join(timeout=45.0)
+                if timing:
+                    store.update_timing(pid, turn_id, timing)
+            emit({"type": "complete", "turn_id": turn_id, "timing": timing})
+        except Conflict as exc:
+            cancelled_flag.set() if "cancelled_flag" in locals() else None
+            emit({"type": "cancelled", "error": str(exc)})
+        except (Missing, speech.SpeechError) as exc:
+            emit({"type": "error", "error": str(exc), "code": 404 if isinstance(exc, Missing) else 502})
+        except (ValueError, KeyError, TypeError) as exc:
+            emit({"type": "error", "error": str(exc) or "输入参数无效。", "code": 400})
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        self._finish_ndjson()
+
+    def _stream_greeting_speech(self, body: dict) -> None:
+        store: Store = self.server.store
+        speech_key: str = self.server.speech_key
+        if not speech_key:
+            return self.respond_json(503, {"error": "未配置语音合成密钥。"})
+        pid = _str(body, "profile", 64)
+        state = store.public_state(pid)
+        reply = state["session"]["reply"]
+        emit = self._begin_ndjson()
+        try:
+            for seg in reply.get("segments", []):
+                idx = seg["index"]
+                emit({"type": "sentence", "segment": idx, "text": seg["text"]})
+                for pcm_chunk in speech.stream_tts_pcm(speech_key, seg["text"]):
+                    emit(
+                        {
+                            "type": "audio_pcm",
+                            "segment": idx,
+                            "rate": speech.PCM_RATE,
+                            "pcm": base64.b64encode(pcm_chunk).decode("ascii"),
+                        }
+                    )
+                emit({"type": "segment_done", "segment": idx})
+            emit({"type": "complete", "reply_id": reply["id"]})
+        except speech.SpeechError as exc:
+            emit({"type": "tts_warning", "error": str(exc)})
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        self._finish_ndjson()
+
+    def route(self) -> None:
+        host = urlsplit("//" + self.headers.get("Host", "")).hostname or ""
+        if host not in {"127.0.0.1", "localhost", "::1"}:
+            raise PermissionError("此 POC 服务默认仅监听本机。")
+
+        path = urlsplit(self.path).path
+        store: Store = self.server.store
+        curriculum: Curriculum = self.server.curriculum
+
+        if self.command == "GET":
+            if path == "/api/bootstrap":
+                if self.server.prewarm and self.server.speech_key:
+                    speech.warm(self.server.speech_key)
+                profiles = store.list_profiles()
+                if not profiles:
+                    initial_state = store.create_profile("Leo", preset="fresh")
+                    profiles = store.list_profiles()
+                else:
+                    initial_state = store.public_state(profiles[0]["id"])
+                _, model_name, _ = brain.model_config()
+                return self.respond_json(
+                    200,
+                    {
+                        "profiles": profiles,
+                        "state": initial_state,
+                        "traces": store.recent_traces(initial_state["profile"]["id"], limit=20),
+                        "curriculum": curriculum.summary(),
+                        "capabilities": {
+                            "voice_enabled": bool(self.server.speech_key),
+                            "brain_configured": brain.configured(),
+                            "model": model_name if brain.configured() else "offline-fallback",
+                            "asr_model": os.getenv("SPARKY_ASR_MODEL", speech.ASR_MODEL),
+                            "tts_model": os.getenv("SPARKY_TTS_MODEL", speech.TTS_MODEL),
+                        },
+                    },
+                )
+            if m := re.fullmatch(r"/api/state/([a-f0-9]{32})", path):
+                pid = m.group(1)
+                return self.respond_json(
+                    200,
+                    {
+                        "state": store.public_state(pid),
+                        "traces": store.recent_traces(pid, limit=25),
+                    },
+                )
+            static_files = {
+                "/": ("index.html", "text/html; charset=utf-8"),
+                "/style.css": ("style.css", "text/css; charset=utf-8"),
+                "/voice.js": ("voice.js", "application/javascript; charset=utf-8"),
+                "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+            }
+            if path in static_files:
+                fname, mime = static_files[path]
+                return self.respond_bytes(200, (ROOT / "web" / fname).read_bytes(), mime)
+            raise Missing("路径不存在。")
+
+        length = int(self.headers.get("Content-Length", "0"))
+        max_len = 7 * 1024 * 1024 if path == "/api/turn" else 65536
+        if length <= 0 or length > max_len:
+            raise ValueError("请求体长度无效。")
+        body = json.loads(self.rfile.read(length))
+        if not isinstance(body, dict):
+            raise ValueError("请求体必须是 JSON 对象。")
+
+        if path == "/api/turn":
+            return self._stream_turn(body)
+        if path == "/api/speech":
+            return self._stream_greeting_speech(body)
+        if path == "/api/profile":
+            op = body.get("op", "create")
+            if op == "delete":
+                store.delete_profile(_str(body, "profile", 64))
+                profiles = store.list_profiles()
+                if not profiles:
+                    state = store.create_profile("Leo", preset="fresh")
+                    profiles = store.list_profiles()
+                else:
+                    state = store.public_state(profiles[0]["id"])
+                return self.respond_json(200, {"profiles": profiles, "state": state, "traces": store.recent_traces(state["profile"]["id"])})
+            preset = body.get("preset", "fresh")
+            name = str(body.get("name", "")).strip()[:32]
+            state = store.create_profile(name, preset=preset if preset in {"fresh", "returning_dino"} else "fresh")
+            return self.respond_json(
+                201,
+                {
+                    "profiles": store.list_profiles(),
+                    "state": state,
+                    "traces": store.recent_traces(state["profile"]["id"]),
+                },
+            )
+        if path == "/api/session/next":
+            pid = _str(body, "profile", 64)
+            state = store.start_next_session(
+                pid,
+                summarizer=brain.summarize_session,
+                opening_generator=brain.generate_session_opening,
+            )
+            return self.respond_json(
+                200,
+                {
+                    "profiles": store.list_profiles(),
+                    "state": state,
+                    "traces": store.recent_traces(pid, limit=25),
+                },
+            )
+        if path == "/api/cancel":
+            store.cancel_turn(_str(body, "profile", 64), _str(body, "turn", 100))
+            return self.respond_json(200, {"ok": True})
+        if path == "/api/delivery":
+            seg = body.get("segment")
+            store.record_delivery(
+                _str(body, "profile", 64),
+                _str(body, "reply", 64),
+                _str(body, "status", 24),
+                seg if type(seg) is int else None,
+            )
+            return self.respond_json(200, {"ok": True})
+        if path == "/api/metrics":
+            metrics = body.get("metrics")
+            if not isinstance(metrics, dict):
+                raise ValueError("无效指标。")
+            clean_metrics = {k: round(float(v), 1) for k, v in metrics.items() if isinstance(v, (int, float)) and 0 <= v <= 300000}
+            store.update_timing(_str(body, "profile", 64), _str(body, "turn", 100), clean_metrics)
+            return self.respond_json(200, {"ok": True})
+        if path == "/api/memory":
+            pid = _str(body, "profile", 64)
+            op = _str(body, "op", 32)
+            val = str(body.get("value", ""))[:120]
+            state = store.mutate_memory(pid, op, val)
+            return self.respond_json(200, {"state": state})
+        if path == "/api/curriculum/reload":
+            summary = curriculum.reload()
+            pid = body.get("profile")
+            state = store.public_state(pid) if isinstance(pid, str) and len(pid) == 32 else None
+            return self.respond_json(200, {"curriculum": summary, "state": state})
+        raise Missing("未知接口。")
+
+    def handle_http(self) -> None:
         try:
             self.route()
-        except Missing:
-            self.respond(404,{"error":"记录不存在。"})
-        except Conflict as e:
-            self.respond(409,{"error":str(e)})
-        except PermissionError as e:
-            self.respond(403,{"error":str(e)})
-        except speech.SpeechError as e:
-            self.respond(502,{"error":str(e)})
-        except (ValueError,KeyError,TypeError):
-            self.respond(400,{"error":"操作或输入无效，请检查当前活动。"})
-        except (BrokenPipeError,ConnectionResetError):
+        except Missing as exc:
+            self.respond_json(404, {"error": str(exc) or "未找到资源。"})
+        except Conflict as exc:
+            self.respond_json(409, {"error": str(exc)})
+        except PermissionError as exc:
+            self.respond_json(403, {"error": str(exc)})
+        except speech.SpeechError as exc:
+            self.respond_json(502, {"error": str(exc)})
+        except (ValueError, KeyError, TypeError) as exc:
+            self.respond_json(400, {"error": str(exc) or "请求格式有误。"})
+        except (BrokenPipeError, ConnectionResetError):
             pass
-    do_GET=handle_request
-    do_POST=handle_request
 
-class LocalServer(ThreadingHTTPServer):
-    def server_close(self):
-        if getattr(self,"store",None):
+    do_GET = handle_http
+    do_POST = handle_http
+
+
+class SparkyServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def server_close(self) -> None:
+        if getattr(self, "store", None):
             self.store.close()
         super().server_close()
 
-def make_server(port,db_path,catalog=None,live_key=None,cascade_key=None,public_url="",access_token="",prewarm=False):
-    gate=access.Gate(public_url,access_token)
-    server=LocalServer(("127.0.0.1",port),Handler)
-    server.gate=gate
-    server.store=Store(db_path,catalog or Catalog())
-    server.live_key=live_key
-    server.cascade_key=cascade_key
-    server.prewarm=prewarm
-    return server
 
-if __name__=="__main__":
-    parser=argparse.ArgumentParser()
-    parser.add_argument("--port",type=int)
-    parser.add_argument("--db")
-    parser.add_argument("--public-url",default="",help="Quick Tunnel 的完整 HTTPS 根地址；将隐藏询问试用口令")
-    modes=parser.add_mutually_exclusive_group()
-    modes.add_argument("--live-test",action="store_true",help="成人模拟 GPT-Live 语音测试")
-    modes.add_argument("--cascade",action="store_true",help="OpenAI ASR → C/A/B → TTS")
-    parser.add_argument("--curriculum",default=str(ROOT/"curriculum"),type=type(ROOT))
-    args=parser.parse_args()
-    key=None
-    if args.live_test or args.cascade:
-        from getpass import getpass
-        key=os.getenv("OPENAI_API_KEY") or getpass("输入新 OpenAI 项目密钥（隐藏输入）：").strip()
-        if not key:
-            parser.error("需要 OpenAI 项目密钥才能开启云端语音。")
-    if args.cascade:
-        try:
-            import websocket
-        except ImportError:
-            parser.error("请先运行 python3 -m pip install -r requirements.txt。")
-        if not os.getenv("SPARKY_MODEL_URL"):
-            os.environ["SPARKY_MODEL_URL"]="https://api.openai.com/v1/chat/completions"
-            os.environ.setdefault("SPARKY_MODEL","gpt-4.1")
-            os.environ["SPARKY_MODEL_KEY"]=key
-    port=args.port if args.port is not None else (8766 if args.live_test else 8765)
-    db=args.db or ROOT/".data"/("adult-live-test.sqlite3" if args.live_test else "sparky.sqlite3")
-    access_token=""
-    if args.public_url:
-        from getpass import getpass
-        access_token=os.getenv("SPARKY_ACCESS_TOKEN") or getpass("试用访问口令（至少 16 字符，隐藏输入）：")
-    server=make_server(port,db,Catalog(args.curriculum),live_key=key if args.live_test else None,
-                       cascade_key=key if args.cascade else None,public_url=args.public_url,access_token=access_token,prewarm=args.cascade)
-    print(f"Sparky  http://127.0.0.1:{server.server_port}",flush=True)
+def make_server(
+    port: int,
+    db_path: Path | str,
+    curriculum: Curriculum | None = None,
+    speech_key: str = "",
+    prewarm: bool = False,
+) -> SparkyServer:
+    curr = curriculum or Curriculum()
+    srv = SparkyServer(("127.0.0.1", port), SparkyHandler)
+    srv.curriculum = curr
+    srv.store = Store(db_path, curr)
+    srv.speech_key = speech_key
+    srv.prewarm = prewarm
+    return srv
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Sparky v2 双语陪伴+教学 POC 服务")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--db", type=Path, default=ROOT / ".data" / "sparky_v2.sqlite3")
+    parser.add_argument("--curriculum", type=Path, default=ROOT / "curriculum")
+    parser.add_argument("--offline", action="store_true", help="强制离线规则模式（不调用 OpenAI）")
+    args = parser.parse_args()
+
+    key = ""
+    if not args.offline:
+        key = os.getenv("OPENAI_API_KEY", "").strip()
+        if not key and not brain.configured():
+            try:
+                from getpass import getpass
+
+                entered = getpass("输入 OpenAI API Key（直接回车则使用本地离线演示模式）：").strip()
+                if entered:
+                    key = entered
+            except (EOFError, KeyboardInterrupt):
+                key = ""
+        if key:
+            os.environ.setdefault("OPENAI_API_KEY", key)
+            os.environ.setdefault("SPARKY_MODEL_URL", "https://api.openai.com/v1/chat/completions")
+            os.environ.setdefault("SPARKY_MODEL", "gpt-4.1")
+            os.environ.setdefault("SPARKY_MODEL_KEY", key)
+    else:
+        os.environ["OPENAI_API_KEY"] = ""
+        os.environ["SPARKY_MODEL_URL"] = ""
+
+    srv = make_server(args.port, args.db, Curriculum(args.curriculum), speech_key=key, prewarm=bool(key))
+    mode_label = "OpenAI Streaming Cascade (ASR -> GPT-4.1 -> PCM TTS)" if key else "Local Offline Fallback"
+    print(f"Sparky POC v2 running at http://127.0.0.1:{srv.server_port}  [{mode_label}]", flush=True)
     try:
-        server.serve_forever()
+        srv.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        server.server_close()
+        srv.server_close()
 
+
+if __name__ == "__main__":
+    main()

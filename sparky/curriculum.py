@@ -265,14 +265,15 @@ class Curriculum:
             t = self.targets.get(target_id)
             if not t:
                 return None
-            zh_display = t["examples"][0] if t["kind"] == "pattern" else t["zh"]
+            zh_display = SLOT_RE.sub("…", t["zh"]) if t["kind"] == "pattern" else t["zh"]
+            example = t["examples"][0] if t["kind"] == "pattern" and t.get("examples") else None
             return {
                 "id": t["id"],
                 "kind": t["kind"],
                 "zh": zh_display,
-                "template": t["zh"] if t["kind"] == "pattern" else None,
-                "pinyin": t["pinyin"],
-                "en": t["en"],
+                "example": example,
+                "pinyin": SLOT_RE.sub("…", t["pinyin"]),
+                "en": SLOT_RE.sub("…", t["en"]),
                 "emoji": t["emoji"],
                 "hook": t.get("hook") or t.get("scaffolds", {}).get("expose", ""),
             }

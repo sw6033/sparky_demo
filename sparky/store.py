@@ -290,7 +290,7 @@ class Store:
                 if t["stage"] != "unseen":
                     stars.append({
                         "id": t["id"],
-                        "zh": t["zh"],
+                        "zh": t["zh"].split("{")[0] + ("…" if "{" in t["zh"] else ""),
                         "en": t["en"],
                         "emoji": t["emoji"],
                         "stage": t["stage"],

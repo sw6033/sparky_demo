@@ -19,3 +19,7 @@ test('truncation, stale audio and upstream errors never yield playable result',a
 test('empty ASR produces stop rather than invented audio',async()=>{
   assert.equal((await read(new Response(wire([{type:'stop',message:'Try again'}])))).stopped,'Try again');
 });
+test('tunnel HTML failures and truncated JSON produce a useful error',async()=>{
+  await assert.rejects(read(new Response('<!DOCTYPE html>',{status:502})),e=>e.code===502 && /连接暂时不稳定/.test(e.message));
+  await assert.rejects(read(new Response('{"type":')),/连接中断/);
+});

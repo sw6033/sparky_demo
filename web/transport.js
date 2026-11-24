@@ -1,12 +1,17 @@
 "use strict";
 
 async function readCascade(response, onRecord=()=>{}) {
-  if(!response.ok)throw Object.assign(new Error((await response.json()).error||"语音请求失败。"),{code:response.status});
+  if(!response.ok){
+    let message="语音连接暂时不稳定，请重试。";
+    try{message=(await response.json()).error||message;}catch{}
+    throw Object.assign(new Error(message),{code:response.status});
+  }
   const reader=response.body.getReader(),decoder=new TextDecoder();
   let buffer="",state,audio,stopped,finished=false;
   function record(line){
     if(!line.trim())return;
-    const event=JSON.parse(line);
+    let event;
+    try{event=JSON.parse(line);}catch{throw new Error("语音连接中断，请重试。");}
     if(event.type==="error")throw Object.assign(new Error(event.error),{code:event.code});
     if(event.type==="state")state=event.state;
     if(event.type==="stop")stopped=event.message;

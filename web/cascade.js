@@ -229,7 +229,11 @@ class CascadeVoice {
       if(!this.current(token)||this.playback!==playback||playback.started)return;
       playback.started=true;
       this.timing.audio_start_ms=(this.timing.audio_start_ms||0)+Date.now()-playRequestedAt;
-      if(this.lastPartEnded!==null)this.timing.sentence_gap_ms=(this.timing.sentence_gap_ms||0)+Date.now()-this.lastPartEnded;
+      if(this.lastPartEnded!==null){
+        const gap=Date.now()-this.lastPartEnded;
+        this.timing.sentence_gap_ms=(this.timing.sentence_gap_ms||0)+gap;
+        this.timing.sentence_gap_max_ms=Math.max(this.timing.sentence_gap_max_ms||0,gap);
+      }
       this.delivery(playback,"started");
       if(index===0){
         this.timing.first_audio_ms=Date.now()-this.turnAt;

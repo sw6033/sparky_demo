@@ -115,6 +115,13 @@ class OptimizationTests(unittest.TestCase):
         self.assertEqual(segments.attach({"text":"One. Two. Three."})["speech_mode"],"whole")
         self.assertEqual(segments.attach({"text":"你好"*30+"。"})["speech_mode"],"sentences")
 
+    def test_tiny_story_opening_stays_with_a_complete_first_sentence(self):
+        opening='Okay! Once upon a time, a little rabbit looked up at the moon.'
+        story=opening+' The bright moon watched over the tiny house all night, while the rabbit dreamed of hopping among the stars.'
+        parts=segments.split(story)
+        self.assertEqual(parts[0]['text'],opening)
+        self.assertEqual(' '.join(p['text'] for p in parts),story)
+
     def test_delivery_and_notes_are_in_next_model_context(self):
         self.turn(type="start",lesson="animals",mode="A")
         reply=self.turn("help")["reply"]

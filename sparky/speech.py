@@ -6,9 +6,11 @@ import secrets
 import ssl
 import sys
 import time
+import threading
 import wave
 from pathlib import Path
 from urllib import request, error, parse
+from . import connections
 
 
 ASR_MODEL = "gpt-transcribe"
@@ -50,7 +52,7 @@ def transcribe(key, encoded, media):
     upstream = request.Request("https://api.openai.com/v1/audio/transcriptions", data=b"".join(parts),
         headers={"Authorization": "Bearer " + key, "Content-Type": "multipart/form-data; boundary=" + boundary})
     try:
-        with request.urlopen(upstream, timeout=40, context=tls_context()) as response:
+        with connections.urlopen(upstream, timeout=40, context=tls_context()) as response:
             result = json.loads(response.read(131072))
         text = result["text"]
         if not isinstance(text, str) or len(text) > 800:
@@ -65,30 +67,84 @@ def transcribe(key, encoded, media):
 def normalized(text):
     return "".join(character for character in text.casefold() if character.isalnum())
 
+def open_speech(key,model,voice):
+    import websocket
+    connection=websocket.create_connection(
+        "wss://api.openai.com/v1/realtime?model="+parse.quote(model,safe=""),
+        header={"Authorization":"Bearer "+key},timeout=15,sslopt={"context":tls_context()})
+    try:
+        connection.send(json.dumps({"type":"session.update","session":{
+            "type":"realtime","output_modalities":["audio"],
+            "audio":{"output":{"format":{"type":"audio/pcm","rate":24000},"voice":voice}},"tools":[]}}))
+        return connection
+    except Exception:
+        connection.close();raise
 
-def synthesize(key, text):
+def warm_speech(key,force=False):
+    model=os.getenv("SPARKY_TTS_MODEL",TTS_MODEL);voice=os.getenv("SPARKY_TTS_VOICE","marin")
+    pool_key=(key,model,voice)
+    connection=None if force else connections.speech_pool.take(pool_key)
+    if connection is not None:
+        connections.speech_pool.put(pool_key,connection);return
+    connection=open_speech(key,model,voice)
+    try:
+        deadline=time.monotonic()+15
+        while time.monotonic()<deadline:
+            event=json.loads(connection.recv())
+            if event.get("type")=="session.updated":
+                connections.speech_pool.put(pool_key,connection);connection=None;return
+            if event.get("type")=="error":return
+    finally:
+        if connection is not None:connection.close()
+
+_warm_lock=threading.Lock()
+_warming=set()
+_last_warm={}
+def warm(key):
+    """Prepare connections after authorized page load; never generate a reply."""
+    with _warm_lock:
+        if key in _warming or time.monotonic()-_last_warm.get(key,0)<20:return
+        _warming.add(key);_last_warm[key]=time.monotonic()
+    def http():
+        req=request.Request("https://api.openai.com/v1/models",method="HEAD",headers={"Authorization":"Bearer "+key})
+        with connections.urlopen(req,timeout=15,context=tls_context()) as response:response.read()
+    def safe(fn):
+        try:fn()
+        except Exception:pass # Warmup is optional; the actual turn reports errors.
+    def worker():
+        pool_key=(key,os.getenv("SPARKY_TTS_MODEL",TTS_MODEL),os.getenv("SPARKY_TTS_VOICE","marin"))
+        missing=max(0,2-connections.speech_pool.available(pool_key))
+        jobs=[threading.Thread(target=safe,args=(fn,),daemon=True) for fn in [http]+[lambda:warm_speech(key,force=True)]*missing]
+        try:
+            for job in jobs:job.start()
+            for job in jobs:job.join()
+        finally:
+            with _warm_lock:_warming.discard(key)
+    threading.Thread(target=worker,daemon=True).start()
+
+
+def synthesize(key, text, _fresh=False):
     try:
         import websocket
     except ImportError:
         raise SpeechError("请先安装 requirements.txt 中的语音依赖。") from None
     model = os.getenv("SPARKY_TTS_MODEL", TTS_MODEL)
+    voice = os.getenv("SPARKY_TTS_VOICE", "marin")
+    pool_key=(key,model,voice)
     connection = None
+    reused=False
     try:
-        connection = websocket.create_connection(
-            "wss://api.openai.com/v1/realtime?model=" + parse.quote(model, safe=""),
-            header={"Authorization": "Bearer " + key}, timeout=15,
-            sslopt={"context": tls_context()})
-        connection.send(json.dumps({"type": "session.update", "session": {
-            "type": "realtime", "output_modalities": ["audio"],
-            "audio": {"output": {"format": {"type": "audio/pcm", "rate": 24000},
-                                 "voice": os.getenv("SPARKY_TTS_VOICE", "marin")}},
-            "tools": []}}))
+        connection=None if _fresh else connections.speech_pool.take(pool_key)
+        reused=connection is not None
+        if not reused:
+            connection=open_speech(key,model,voice)
         deadline = time.monotonic() + 50
         chunks, transcript = [], []
         total = 0
         requested = False
         while time.monotonic() < deadline:
-            event = json.loads(connection.recv())
+            # A reused session is already configured; no extra update round trip.
+            event = {"type":"session.updated"} if reused and not requested else json.loads(connection.recv())
             kind = event.get("type")
             if kind == "session.updated" and not requested:
                 connection.send(json.dumps({"type": "response.create", "response": {
@@ -123,11 +179,19 @@ def synthesize(key, text):
                     audio.setsampwidth(2)
                     audio.setframerate(24000)
                     audio.writeframes(b"".join(chunks))
-                return output.getvalue()
+                result=output.getvalue()
+                connections.speech_pool.put(pool_key,connection);connection=None
+                return result
         raise SpeechError("语音合成超时，请重试。")
     except SpeechError:
         raise
-    except (OSError, ValueError, KeyError, TypeError, websocket.WebSocketException):
+    except (OSError, ValueError, KeyError, TypeError, websocket.WebSocketException) as exc:
+        # A server may close an idle session. Nothing has been delivered yet;
+        # retry only that closed-connection case, once, on a fresh session.
+        closed=getattr(websocket,"WebSocketConnectionClosedException",ConnectionResetError)
+        if reused and isinstance(exc,(closed,BrokenPipeError,ConnectionResetError)):
+            if connection is not None:connection.close();connection=None
+            return synthesize(key,text,_fresh=True)
         raise SpeechError("语音合成连接失败，请重试或查看文字回复。") from None
     finally:
         if connection is not None:

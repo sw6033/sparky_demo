@@ -6,7 +6,7 @@ import urllib.request
 from pathlib import Path
 from urllib.error import HTTPError
 from .speech import tls_context
-from . import diagnostics
+from . import diagnostics, connections
 
 PROMPT_DIR=Path(__file__).parent/"prompts"
 CORE_PROMPT=(PROMPT_DIR/"core.txt").read_text().strip()
@@ -32,7 +32,7 @@ def request_json(system, data, purpose="decision"):
         headers["Authorization"]="Bearer "+os.environ["SPARKY_MODEL_KEY"]
     request=urllib.request.Request(os.environ["SPARKY_MODEL_URL"],data=json.dumps(payload).encode(),headers=headers)
     try:
-        with urllib.request.urlopen(request,timeout=20,context=tls_context()) as response:
+        with connections.urlopen(request,timeout=20,context=tls_context()) as response:
             response_data=json.loads(response.read(131072))
         result=json.loads(response_data["choices"][0]["message"]["content"])
         if not isinstance(result,dict):

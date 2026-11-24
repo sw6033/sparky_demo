@@ -154,6 +154,7 @@ class Handler(BaseHTTPRequestHandler):
         store=self.server.store
         if self.command=="GET":
             if path=="/api/home":
+                if self.server.prewarm and self.server.cascade_key:speech.warm(self.server.cascade_key)
                 family=self.family()
                 return self.respond(200,{"lessons":store.catalog.listing(),"profiles":store.profiles(family),
                     "model":brain.configured(),"live":bool(self.server.live_key),
@@ -248,7 +249,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200,{"ok":True})
         if path=="/api/metrics":
             metrics=b.get("metrics")
-            allowed={"endpoint_wait_ms","first_audio_ms","total_turn_ms","recording_ms","pipeline_transcript_ms","pipeline_state_ms","pipeline_audio_ms","pipeline_request_ms","audio_start_ms","sentence_gap_ms","client_queue_ms"}
+            allowed={"endpoint_wait_ms","first_audio_ms","total_turn_ms","recording_ms","pipeline_transcript_ms","pipeline_state_ms","pipeline_audio_ms","pipeline_request_ms","audio_start_ms","sentence_gap_ms","sentence_gap_max_ms","client_queue_ms"}
             if not isinstance(metrics,dict) or any(k not in allowed or type(v) not in (int,float) or not 0<=v<=300000 for k,v in metrics.items()):
                 raise ValueError("无效耗时数据。")
             store.trace(family,pid,string(b,"turn",100),{"client_metrics":metrics})
@@ -289,13 +290,14 @@ class LocalServer(ThreadingHTTPServer):
             self.store.close()
         super().server_close()
 
-def make_server(port,db_path,catalog=None,live_key=None,cascade_key=None,public_url="",access_token=""):
+def make_server(port,db_path,catalog=None,live_key=None,cascade_key=None,public_url="",access_token="",prewarm=False):
     gate=access.Gate(public_url,access_token)
     server=LocalServer(("127.0.0.1",port),Handler)
     server.gate=gate
     server.store=Store(db_path,catalog or Catalog())
     server.live_key=live_key
     server.cascade_key=cascade_key
+    server.prewarm=prewarm
     return server
 
 if __name__=="__main__":
@@ -330,7 +332,7 @@ if __name__=="__main__":
         from getpass import getpass
         access_token=os.getenv("SPARKY_ACCESS_TOKEN") or getpass("试用访问口令（至少 16 字符，隐藏输入）：")
     server=make_server(port,db,Catalog(args.curriculum),live_key=key if args.live_test else None,
-                       cascade_key=key if args.cascade else None,public_url=args.public_url,access_token=access_token)
+                       cascade_key=key if args.cascade else None,public_url=args.public_url,access_token=access_token,prewarm=args.cascade)
     print(f"Sparky  http://127.0.0.1:{server.server_port}",flush=True)
     try:
         server.serve_forever()

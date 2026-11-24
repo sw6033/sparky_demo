@@ -224,7 +224,11 @@ window.addEventListener("pagehide",suspend);
       await ensureProfile();
       const response=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({profile,...data}),signal});
-      if (!response.ok) throw Object.assign(new Error((await response.json()).error || "语音请求失败。"),{code:response.status});
+      if (!response.ok){
+        let message="语音连接暂时不稳定，请重试。";
+        try{message=(await response.json()).error||message;}catch{}
+        throw Object.assign(new Error(message),{code:response.status});
+      }
       return response;
     }
     function cascadeTurn(input,signal,turn,onRecord,isCurrent){

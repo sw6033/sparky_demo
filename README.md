@@ -8,6 +8,8 @@
 
 完整产品取舍、可配置大纲数据结构与运行时架构说明请参见 **[DESIGN_V2.md](./DESIGN_V2.md)**。
 
+工程交接文档：[架构与系统提示词说明](docs/architecture.md)（[Word 版](docs/Sparky%20POC%20v2%20架构与系统提示词说明文档.docx)） · [自动化评测集与迭代文档](docs/eval_suite.md)（[Word 版](docs/Sparky%20POC%20v2%20自动化评测集与自动迭代文档.docx) / [可执行用例](evaluations/README.md)） · [记忆策略与 Dreaming 评估](docs/memory.md)。
+
 ---
 
 ## 快速启动

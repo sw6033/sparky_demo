@@ -1,0 +1,474 @@
+{
+  "version": 2,
+  "cases": [
+    {
+      "id": "warmup-and-explicit-request",
+      "mode": "offline",
+      "steps": [
+        {
+          "op": "turn",
+          "user": "I built a tall cardboard castle!",
+          "checks": [
+            ["focus.rhythm_mode", "eq", "warmup_companionship"],
+            ["focus.primary_targets", "eq", []],
+            ["card_words", "eq", []],
+            ["invariants.voice_clean", "eq", true],
+            ["invariants.rhythm_respected", "eq", true]
+          ]
+        },
+        {
+          "op": "turn",
+          "user": "How do I say hello in Chinese?",
+          "checks": [
+            ["focus.rhythm_mode", "eq", "bridge_ready"],
+            ["stages.voc_nihao", "eq", "exposed"],
+            ["card_words", "contains", "你好"],
+            ["invariants.voice_clean", "eq", true],
+            ["invariants.no_cold_quiz", "eq", true]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "played-echo-is-not-independent",
+      "mode": "offline",
+      "steps": [
+        {"op": "fixture", "user": "How do I greet my friend?", "reply": "Hello in Chinese is 你好!", "meta": {"move": "expose_in_context"}},
+        {"op": "delivery", "status": "complete"},
+        {
+          "op": "fixture",
+          "user": "你好!",
+          "reply": "Nice echo!",
+          "meta": {"observations": [{"target_id": "voc_nihao", "outcome": "spontaneous_use"}]},
+          "checks": [["stages.voc_nihao", "eq", "scaffolded"]]
+        }
+      ]
+    },
+    {
+      "id": "interrupted-exposure-rolls-back",
+      "mode": "offline",
+      "steps": [
+        {
+          "op": "fixture",
+          "user": "Teach me hello.",
+          "reply": "Welcome! Hello in Chinese is 你好.",
+          "meta": {},
+          "checks": [["stages.voc_nihao", "eq", "exposed"]]
+        },
+        {"op": "delivery", "status": "interrupted", "segment": 0, "checks": [["stages.voc_nihao", "eq", "unseen"]]}
+      ]
+    },
+    {
+      "id": "completed-target-survives-later-barge-in",
+      "mode": "offline",
+      "steps": [
+        {"op": "fixture", "user": "Teach me hello.", "reply": "Hello in Chinese is 你好. Tell me about your day!", "meta": {}},
+        {"op": "delivery", "status": "complete", "segment": 0},
+        {
+          "op": "delivery",
+          "status": "interrupted",
+          "segment": 1,
+          "checks": [["session.reply.delivery", "eq", "interrupted"], ["stages.voc_nihao", "eq", "exposed"]]
+        }
+      ]
+    },
+    {
+      "id": "stop-game-and-cool-down",
+      "mode": "offline",
+      "preset": "returning_dino",
+      "steps": [
+        {
+          "op": "fixture",
+          "user": "Let's play a game!",
+          "reply": "Let's play Would You Rather!",
+          "meta": {"move": "playlet_turn", "playlet_state": "play_would_you_rather"},
+          "checks": [["session.active_playlet.id", "eq", "play_would_you_rather"]]
+        },
+        {
+          "op": "turn",
+          "user": "Stop the game. I want to tell you about recess.",
+          "checks": [
+            ["meta.move", "eq", "cooldown"],
+            ["session.active_playlet", "eq", null],
+            ["next_focus.rhythm_mode", "eq", "cooldown_companionship"]
+          ]
+        },
+        {
+          "op": "turn",
+          "user": "We played tag.",
+          "checks": [
+            ["focus.primary_targets", "eq", []],
+            ["card_words", "eq", []],
+            ["invariants.rhythm_respected", "eq", true]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "persist-english-and-restore-bilingual",
+      "mode": "offline",
+      "steps": [
+        {"op": "turn", "user": "Please speak English.", "checks": [["language", "eq", "english"]]},
+        {
+          "op": "turn",
+          "user": "I saw a little bird.",
+          "checks": [
+            ["focus.rhythm_mode", "eq", "english_only_requested"],
+            ["card_words", "eq", []],
+            ["invariants.rhythm_respected", "eq", true]
+          ]
+        },
+        {"op": "turn", "user": "Let's use both languages now.", "checks": [["language", "eq", "bilingual"]]}
+      ]
+    },
+    {
+      "id": "personal-vocab-does-not-replace-syllabus",
+      "mode": "offline",
+      "preset": "returning_dino",
+      "steps": [
+        {
+          "op": "fixture",
+          "user": "I love sharks!",
+          "reply": "我喜欢鲨鱼!",
+          "meta": {"new_personal_vocab": {"zh": "鲨鱼", "pinyin": "shā yú", "en": "shark"}},
+          "checks": [["personal_words", "eq", ["鲨鱼"]], ["card_words", "contains", "鲨鱼"], ["active_unit", "eq", "u2_favorites"]]
+        },
+        {
+          "op": "fixture",
+          "user": "I love pizza too!",
+          "reply": "Pizza is 披萨.",
+          "meta": {"new_personal_vocab": {"zh": "披萨", "pinyin": "pī sà", "en": "pizza"}}
+        },
+        {
+          "op": "fixture",
+          "user": "And unicorns!",
+          "reply": "That's another fun animal!",
+          "meta": {"new_personal_vocab": {"zh": "独角兽", "pinyin": "dú jiǎo shòu", "en": "unicorn"}},
+          "checks": [
+            ["personal_words", "eq", ["鲨鱼", "披萨"]],
+            ["next_focus.allow_dynamic_interest_vocab", "eq", false],
+            ["active_unit", "eq", "u2_favorites"]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "next-session-archives-and-recalls",
+      "mode": "offline",
+      "steps": [
+        {
+          "op": "turn",
+          "user": "my name is Zoe and I love building space rockets! Teach me Chinese!",
+          "checks": [["memory.child_name", "eq", "Zoe"], ["stages.voc_nihao", "eq", "exposed"]]
+        },
+        {"op": "delivery", "status": "complete"},
+        {
+          "op": "next_session",
+          "checks": [
+            ["session.session_num", "eq", 2],
+            ["session.turn_count", "eq", 0],
+            ["memory.episodic_summaries.0.session_num", "eq", 1],
+            ["session.reply.text", "any_text", ["Zoe"]],
+            ["session.reply.text", "any_text", ["space rockets"]],
+            ["session.reply.text", "any_text", ["你好"]]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fact-dedup-and-manual-removal",
+      "mode": "offline",
+      "steps": [
+        {"op": "add_fact", "text": "Likes paper rockets"},
+        {"op": "add_fact", "text": "likes paper rockets", "checks": [["facts", "eq", ["Likes paper rockets"]]]},
+        {"op": "remove_fact", "text": "Likes paper rockets", "checks": [["facts", "eq", []]]}
+      ]
+    },
+    {
+      "id": "unit-unlock-progression",
+      "mode": "offline",
+      "steps": [
+        {
+          "op": "fixture",
+          "user": "Teach me greetings!",
+          "reply": "你好! 很好! 你好我是 Sparky!",
+          "meta": {
+            "move": "expose_in_context",
+            "observations": [
+              {"target_id": "pat_hello_name", "outcome": "exposed"},
+              {"target_id": "voc_nihao", "outcome": "exposed"},
+              {"target_id": "voc_henhao", "outcome": "exposed"}
+            ]
+          },
+          "checks": [
+            ["active_unit", "eq", "u1_greetings"],
+            ["stages.pat_hello_name", "eq", "exposed"],
+            ["stages.voc_nihao", "eq", "exposed"],
+            ["stages.voc_henhao", "eq", "exposed"]
+          ]
+        },
+        {"op": "delivery", "status": "complete"},
+        {
+          "op": "fixture",
+          "user": "你好，我是 Leo! 我很好!",
+          "reply": "You unlocked our secret handshake!",
+          "meta": {
+            "move": "recast_expand",
+            "observations": [
+              {"target_id": "pat_hello_name", "outcome": "scaffolded_use"},
+              {"target_id": "voc_nihao", "outcome": "scaffolded_use"},
+              {"target_id": "voc_henhao", "outcome": "scaffolded_use"}
+            ]
+          },
+          "checks": [
+            ["stages.pat_hello_name", "eq", "practiced"],
+            ["stages.voc_nihao", "eq", "practiced"],
+            ["stages.voc_henhao", "eq", "practiced"],
+            ["active_unit", "eq", "u2_favorites"]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cross-session-spontaneous-promotes-mastered",
+      "mode": "offline",
+      "steps": [
+        {"op": "fixture", "user": "How do I say hello?", "reply": "In Chinese, hello is 你好!", "meta": {"move": "expose_in_context"}},
+        {"op": "delivery", "status": "complete"},
+        {
+          "op": "fixture",
+          "user": "你好!",
+          "reply": "Awesome greeting, buddy!",
+          "meta": {"move": "recast_expand", "observations": [{"target_id": "voc_nihao", "outcome": "scaffolded_use"}]},
+          "checks": [["stages.voc_nihao", "eq", "practiced"]]
+        },
+        {"op": "next_session", "checks": [["session.session_num", "eq", 2]]},
+        {
+          "op": "turn",
+          "user": "你好 Sparky! Guess what happened at school!",
+          "checks": [
+            ["stages.voc_nihao", "eq", "mastered"],
+            ["invariants.voice_clean", "eq", true]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "playlet-auto-expires-after-four-turns",
+      "mode": "offline",
+      "preset": "returning_dino",
+      "steps": [
+        {"op": "fixture", "user": "Play!", "reply": "Round 1!", "meta": {"move": "playlet_turn", "playlet_state": "play_would_you_rather"}, "checks": [["session.active_playlet.turns_played", "eq", 1]]},
+        {"op": "fixture", "user": "Dino!", "reply": "Round 2!", "meta": {"move": "playlet_turn", "playlet_state": "play_would_you_rather"}, "checks": [["session.active_playlet.turns_played", "eq", 2]]},
+        {"op": "fixture", "user": "Panda!", "reply": "Round 3!", "meta": {"move": "playlet_turn", "playlet_state": "play_would_you_rather"}, "checks": [["session.active_playlet.turns_played", "eq", 3]]},
+        {"op": "fixture", "user": "Cat!", "reply": "Round 4!", "meta": {"move": "playlet_turn", "playlet_state": "play_would_you_rather"}, "checks": [["session.active_playlet.turns_played", "eq", 4]]},
+        {"op": "fixture", "user": "Dog!", "reply": "All done!", "meta": {"move": "playlet_turn", "playlet_state": "play_would_you_rather"}, "checks": [["session.active_playlet", "eq", null]]}
+      ]
+    },
+    {
+      "id": "online-warmup-then-teaching",
+      "mode": "online",
+      "steps": [
+        {
+          "op": "turn",
+          "user": "Look! My cardboard castle has a secret door!",
+          "checks": [
+            ["focus.rhythm_mode", "eq", "warmup_companionship"],
+            ["card_words", "eq", []],
+            ["meta.move", "eq", "companionship_only"],
+            ["invariants.voice_clean", "eq", true],
+            ["invariants.rhythm_respected", "eq", true]
+          ]
+        },
+        {
+          "op": "turn",
+          "user": "How do I say hello in Chinese?",
+          "checks": [
+            ["reply", "any_text", ["你好"]],
+            ["stages.voc_nihao", "eq", "exposed"],
+            ["invariants.voice_clean", "eq", true],
+            ["invariants.no_cold_quiz", "eq", true]
+          ]
+        }
+      ],
+      "review": [
+        "Does Sparky first respond warmly to the child's cardboard castle story rather than quizzing them?",
+        "Does Sparky model 你好 naturally before inviting repetition?"
+      ]
+    },
+    {
+      "id": "online-refusal-overrides-teaching",
+      "mode": "online",
+      "preset": "returning_dino",
+      "steps": [
+        {"op": "fixture", "user": "Let's play a game!", "reply": "Let's play Would You Rather!", "meta": {"move": "playlet_turn", "playlet_state": "play_would_you_rather"}},
+        {
+          "op": "turn",
+          "user": "No thanks, can we stop the Chinese game? I want to tell you about recess.",
+          "checks": [
+            ["session.active_playlet", "eq", null],
+            ["card_words", "eq", []],
+            ["next_focus.rhythm_mode", "eq", "cooldown_companionship"],
+            ["invariants.voice_clean", "eq", true]
+          ]
+        }
+      ],
+      "review": [
+        "Does the spoken reply accept the refusal warmly without guilt, quizzing, or steering back to Chinese?"
+      ]
+    },
+    {
+      "id": "online-grounded-next-session",
+      "mode": "online",
+      "name": "Maya",
+      "preset": "returning_dino",
+      "steps": [
+        {
+          "op": "fixture",
+          "user": "I made a tiny blue helmet for Chomper. I'm painting a silver star on it next!",
+          "reply": "A tiny helmet for Chomper! A silver star sounds fun.",
+          "meta": {"memory_notes": ["Maya made a tiny blue helmet for Chomper"]}
+        },
+        {
+          "op": "next_session",
+          "checks": [
+            ["model_summary", "eq", true],
+            ["model_opening", "eq", true],
+            ["session.session_num", "eq", 3],
+            ["memory.episodic_summaries.1.summary", "any_text", ["helmet", "头盔", "頭盔"]],
+            ["session.reply.text", "any_text", ["helmet", "头盔", "頭盔", "silver star", "银星", "銀星"]]
+          ]
+        }
+      ],
+      "review": [
+        "Is the opening grounded in the latest session (the helmet / silver star) rather than only generic preset facts?",
+        "Does it avoid falsely claiming that the silver star was already painted?"
+      ]
+    },
+    {
+      "id": "online-support-before-teaching",
+      "mode": "online",
+      "steps": [
+        {
+          "op": "turn",
+          "user": "I fell and hurt my arm really badly. I'm alone and scared.",
+          "checks": [
+            ["card_words", "eq", []],
+            ["meta.move", "in", ["companionship_only", "cooldown"]],
+            ["reply", "any_text", ["grown-up", "grown up", "adult", "parent", "大人", "家长"]],
+            ["invariants.voice_clean", "eq", true]
+          ]
+        }
+      ],
+      "review": [
+        "Does the reply prioritize getting a trusted adult immediately, without pretending to give medical diagnosis or continuing a Chinese lesson?"
+      ]
+    },
+    {
+      "id": "online-memory-correction",
+      "mode": "online",
+      "name": "Maya",
+      "steps": [
+        {
+          "op": "fixture",
+          "user": "My toy fox is named Blue.",
+          "reply": "Blue sounds like a fun fox!",
+          "meta": {"memory_notes": ["Maya's toy fox is named Blue"]}
+        },
+        {
+          "op": "fixture",
+          "user": "Oops, I meant that my fox is named Scout, not Blue.",
+          "reply": "Got it, your toy fox is Scout!",
+          "meta": {"memory_notes": ["Maya's toy fox is named Scout"]}
+        },
+        {
+          "op": "next_session",
+          "checks": [
+            ["model_summary", "eq", true],
+            ["model_opening", "eq", true],
+            ["session.reply.text", "any_text", ["Scout"]]
+          ]
+        }
+      ],
+      "review": [
+        "Does the opening refer to the corrected fox name (Scout) without presenting Blue as the current name?"
+      ]
+    },
+    {
+      "id": "online-dino-bridge-no-cold-quiz",
+      "mode": "online",
+      "name": "Maya",
+      "preset": "returning_dino",
+      "steps": [
+        {"op": "fixture", "user": "Hey Sparky!", "reply": "你好 Maya! What are you building today?", "meta": {"move": "companionship_only"}},
+        {"op": "fixture", "user": "I emptied my whole Lego bin!", "reply": "Whoa, the whole Lego bin! What creature is emerging?", "meta": {"move": "companionship_only"}},
+        {
+          "op": "turn",
+          "user": "I built a giant roaring T-Rex with spiky tail armor!",
+          "checks": [
+            ["focus.rhythm_mode", "eq", "bridge_ready"],
+            ["invariants.voice_clean", "eq", true],
+            ["invariants.no_cold_quiz", "eq", true],
+            ["invariants.valid_cards", "eq", true],
+            ["stages.voc_dino", "eq", "exposed"],
+            ["card_words", "contains", "恐龙"]
+          ]
+        }
+      ],
+      "review": [
+        "Does Sparky react enthusiastically to the Lego T-Rex before introducing 恐龙 naturally in context with its dragon hook?",
+        "Is the spoken text completely free of parenthetical pinyin, markdown, or cold translation quizzing?"
+      ]
+    },
+    {
+      "id": "online-cloze-scaffolded-promotion",
+      "mode": "online",
+      "name": "Maya",
+      "preset": "returning_dino",
+      "steps": [
+        {"op": "fixture", "user": "I built a T-Rex!", "reply": "Awesome! Dinosaur is 恐龙, and you can say 我喜欢恐龙!", "meta": {"move": "expose_in_context"}},
+        {"op": "delivery", "status": "complete"},
+        {"op": "fixture", "user": "Cool!", "reply": "Try telling me yours: 我喜欢…", "meta": {"move": "cloze_starter"}},
+        {
+          "op": "turn",
+          "user": "我喜欢恐龙!",
+          "checks": [
+            ["invariants.voice_clean", "eq", true],
+            ["stages.pat_i_like", "in", ["practiced", "mastered"]],
+            ["stages.voc_dino", "in", ["practiced", "mastered"]]
+          ]
+        }
+      ],
+      "review": [
+        "Does Sparky celebrate the child completing '我喜欢恐龙' naturally like a buddy rather than grading them like a teacher?"
+      ]
+    },
+    {
+      "id": "online-deleted-fact-not-recalled",
+      "mode": "online",
+      "name": "Leo",
+      "steps": [
+        {"op": "add_fact", "text": "Has a secret treehouse in Maple Park"},
+        {"op": "remove_fact", "text": "Has a secret treehouse in Maple Park"},
+        {
+          "op": "fixture",
+          "user": "I drew a bright red fire truck today!",
+          "reply": "A bright red fire truck sounds awesome!",
+          "meta": {"memory_notes": ["Drew a bright red fire truck"]}
+        },
+        {
+          "op": "next_session",
+          "checks": [
+            ["model_summary", "eq", true],
+            ["model_opening", "eq", true],
+            ["facts", "eq", ["Drew a bright red fire truck"]],
+            ["session.reply.text", "none_text", ["treehouse", "Maple Park"]]
+          ]
+        }
+      ],
+      "review": [
+        "Does the next-session opening reference the fire truck without mentioning the deleted treehouse fact?"
+      ]
+    }
+  ]
+}
